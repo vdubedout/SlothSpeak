@@ -17,6 +17,7 @@ import com.slothspeak.audio.AudioRecorder
 import com.slothspeak.audio.BluetoothAudioRouter
 import com.slothspeak.audio.VadAudioRecorder
 import com.slothspeak.data.ApiKeyManager
+import com.slothspeak.data.CompatibleProviderManager
 import com.slothspeak.data.db.SlothSpeakDatabase
 import com.slothspeak.service.SlothSpeakService
 import kotlinx.coroutines.CompletableDeferred
@@ -35,6 +36,7 @@ import java.io.File
 class ConversationViewModel(application: Application) : AndroidViewModel(application) {
 
     private val apiKeyManager = ApiKeyManager(application)
+    private val compatibleProviderManager = CompatibleProviderManager(application)
     private val database = SlothSpeakDatabase.getInstance(application)
     private val bluetoothRouter = BluetoothAudioRouter(application)
     private val audioFocusManager = AudioFocusManager(application).also {
@@ -88,6 +90,8 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
     data class UiState(
         val isRecording: Boolean = false,
         val hasApiKey: Boolean = false,
+        val voiceAvailable: Boolean = false,
+        val canConverse: Boolean = false,
         val showRecordingOverlay: Boolean = false,
         val lowStorageWarning: Boolean = false,
         val serviceBindError: Boolean = false,
@@ -145,13 +149,36 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
     }
 
     init {
-        _uiState.value = _uiState.value.copy(hasApiKey = apiKeyManager.hasKey())
+        _uiState.value = _uiState.value.copy(
+            hasApiKey = apiKeyManager.hasKey(),
+            voiceAvailable = apiKeyManager.hasKey(),
+            canConverse = computeCanConverse()
+        )
         checkStorage()
         reconnectToActiveService()
     }
 
     fun refreshApiKeyStatus() {
-        _uiState.value = _uiState.value.copy(hasApiKey = apiKeyManager.hasKey())
+        _uiState.value = _uiState.value.copy(
+            hasApiKey = apiKeyManager.hasKey(),
+            voiceAvailable = apiKeyManager.hasKey(),
+            canConverse = computeCanConverse()
+        )
+    }
+
+    private fun computeCanConverse(): Boolean {
+        if (apiKeyManager.hasKey() || apiKeyManager.hasGeminiKey() ||
+            apiKeyManager.hasClaudeKey() || apiKeyManager.hasGrokKey()
+        ) return true
+        val compatId = apiKeyManager.getSelectedCompatProviderId()
+        if (compatId != null) {
+            val provider = compatibleProviderManager.getProvider(compatId)
+            if (provider != null) {
+                val key = compatibleProviderManager.getProviderKey(compatId)
+                if (!key.isNullOrBlank()) return true
+            }
+        }
+        return false
     }
 
     fun goHome() {
@@ -348,6 +375,48 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
 
     fun startFollowUp() {
         startRecording()
+    }
+
+    /**
+     * Expose follow-up tracking IDs so the text flow can reuse the same
+     * conversation chaining that the voice follow-up flow uses.
+     */
+    fun getFollowUpConversationId(): Long? = _currentConversationId.value
+    fun getFollowUpResponseId(): String? = _currentResponseId.value
+
+    /**
+     * Submit a text question (no voice/OpenAI key required).
+     * Guards: blank input, must be able to converse.
+     */
+    fun submitTextQuestion(question: String) {
+        if (question.isBlank()) return
+        if (_isPipelineRunning.value) return // Close double-submit window before processing state lands
+        if (!computeCanConverse()) return
+
+        stopRecording() // Safety: stop any in-progress recording
+
+        // Obtain conversationId/previousResponseId the same way the voice flow does
+        val conversationId = _currentConversationId.value
+        val previousResponseId = _currentResponseId.value
+
+        _isPipelineRunning.value = true
+        val deferred = bindAndAwaitService()
+
+        viewModelScope.launch {
+            try {
+                val svc = withTimeout(10_000) { deferred.await() }
+                _isViewingActivePipeline.value = true
+                svc.startTextPipeline(question, conversationId, previousResponseId)
+            } catch (e: TimeoutCancellationException) {
+                _isPipelineRunning.value = false
+                Log.e(TAG, "Timed out waiting for service bind for text question", e)
+                _uiState.value = _uiState.value.copy(serviceBindError = true)
+            } catch (e: Exception) {
+                _isPipelineRunning.value = false
+                Log.e(TAG, "Failed to bind service for text question", e)
+                _uiState.value = _uiState.value.copy(serviceBindError = true)
+            }
+        }
     }
 
     private fun startRecording() {

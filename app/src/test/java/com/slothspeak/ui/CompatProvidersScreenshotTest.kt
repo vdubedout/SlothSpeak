@@ -18,6 +18,7 @@ import com.github.takahirom.roborazzi.captureRoboImage
 import com.slothspeak.data.CompatibleProviderConfig
 import com.slothspeak.ui.components.QAPairCard
 import com.slothspeak.ui.screens.CompatProvidersList
+import com.slothspeak.ui.screens.TextInputQuestionBar
 import com.slothspeak.ui.theme.SlothSpeakTheme
 import org.junit.Rule
 import org.junit.Test
@@ -181,5 +182,40 @@ the weather is most favorable and the city's parks and gardens are at their most
 
         // PNG capture
         rule.onRoot().captureRoboImage("build/ui-screenshots/qaPairCard_thinkingExpanded.png")
+    }
+    // ========================
+    //  Test 4: TextInputQuestionBar — Text-only mode (no voice)
+    // ========================
+
+    @Test
+    fun mainScreen_textInputMode_png() {
+        var submittedText = ""
+        rule.setContent {
+            SlothSpeakTheme {
+                Surface(modifier = Modifier.fillMaxWidth()) {
+                    TextInputQuestionBar(
+                        onQuestionSubmit = { submittedText = it },
+                        modifier = Modifier.padding(16.dp)
+                    )
+                }
+            }
+        }
+        rule.waitForIdle()
+
+        // Semantics assertions
+        rule.onNodeWithText("Voice input needs an OpenAI API key — Settings").assertIsDisplayed()
+        rule.onNodeWithText("Type your question…").assertIsDisplayed()
+        rule.onNodeWithContentDescription("Send").assertIsDisplayed()
+
+        // Type text and submit
+        rule.onNodeWithText("Type your question…").performTextInput("What is the weather?")
+        rule.onNodeWithContentDescription("Send").performClick()
+        rule.waitForIdle()
+
+        // Assert callback fired with the question
+        assert(submittedText == "What is the weather?") { "Expected question to be submitted" }
+
+        // PNG capture
+        rule.onRoot().captureRoboImage("build/ui-screenshots/mainScreen_textInputMode.png")
     }
 }
