@@ -105,7 +105,8 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         val model: String? = null,
         val reasoningEffort: String? = null,
         val llmResponseSeconds: Int? = null,
-        val answerTextRich: String? = null
+        val answerTextRich: String? = null,
+        val reasoningText: String? = null
     )
 
     private val serviceConnection = object : ServiceConnection {
@@ -290,7 +291,8 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
                         model = pair.model,
                         reasoningEffort = pair.reasoningEffort,
                         llmResponseSeconds = pair.llmResponseSeconds,
-                        answerTextRich = pair.answerTextRich
+                        answerTextRich = pair.answerTextRich,
+                        reasoningText = pair.reasoningText
                     )
                 }
             } catch (e: Exception) {
@@ -308,7 +310,8 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
                 responseId = null,
                 audioFiles = null,
                 isProcessing = true,
-                answerTextRich = richText
+                answerTextRich = richText,
+                reasoningText = null
             )
             // The current Q&A pair may already be in the DB (early save creates a
             // placeholder after transcription, final save updates it before playback).
@@ -591,7 +594,8 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
                                 model = state.model,
                                 reasoningEffort = state.reasoningEffort,
                                 llmResponseSeconds = state.llmResponseSeconds,
-                                answerTextRich = state.answerTextRich
+                                answerTextRich = state.answerTextRich,
+                                reasoningText = state.reasoningText
                             )
                         }
                         _isViewingActivePipeline.value = false
@@ -735,7 +739,8 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
                     responseId = null,
                     audioFiles = null,
                     isProcessing = isProcessing,
-                    answerTextRich = answerTextRich
+                    answerTextRich = answerTextRich,
+                    reasoningText = null
                 )
             )
         }
@@ -751,7 +756,8 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         model: String? = null,
         reasoningEffort: String? = null,
         llmResponseSeconds: Int? = null,
-        answerTextRich: String? = null
+        answerTextRich: String? = null,
+        reasoningText: String? = null
     ) {
         val items = _sessionItems.value.toMutableList()
         // Find the target item to update:
@@ -774,7 +780,8 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
             model = model,
             reasoningEffort = reasoningEffort,
             llmResponseSeconds = llmResponseSeconds,
-            answerTextRich = answerTextRich
+            answerTextRich = answerTextRich,
+            reasoningText = reasoningText
         )
 
         if (targetIndex >= 0) {
@@ -786,6 +793,7 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
                 reasoningEffort = reasoningEffort ?: existing.reasoningEffort,
                 llmResponseSeconds = llmResponseSeconds ?: existing.llmResponseSeconds,
                 answerTextRich = answerTextRich ?: existing.answerTextRich,
+                reasoningText = reasoningText ?: existing.reasoningText,
                 timestamp = existing.timestamp
             )
         } else {
@@ -902,7 +910,8 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
                         model = pair.model,
                         reasoningEffort = pair.reasoningEffort,
                         llmResponseSeconds = pair.llmResponseSeconds,
-                        answerTextRich = pair.answerTextRich
+                        answerTextRich = pair.answerTextRich,
+                        reasoningText = pair.reasoningText
                     )
                 }
 

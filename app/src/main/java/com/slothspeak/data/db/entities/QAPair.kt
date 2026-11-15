@@ -29,5 +29,6 @@ data class QAPair(
     val reasoningEffort: String? = null,
     val llmResponseSeconds: Int? = null,
     val answerTextRich: String? = null,
+    val reasoningText: String? = null,
     val createdAt: Long = System.currentTimeMillis()
 )

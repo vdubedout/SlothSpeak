@@ -5,6 +5,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.slothspeak.config.SystemPrompts
 import com.slothspeak.data.ApiKeyManager
+import com.slothspeak.data.CompatibleProviderConfig
+import com.slothspeak.data.CompatibleProviderManager
 import com.slothspeak.data.db.SlothSpeakDatabase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -16,6 +18,7 @@ import java.io.File
 class SettingsViewModel(application: Application) : AndroidViewModel(application) {
 
     private val apiKeyManager = ApiKeyManager(application)
+    private val compatibleProviderManager = CompatibleProviderManager(application)
     private val database = SlothSpeakDatabase.getInstance(application)
 
     private val _state = MutableStateFlow(SettingsState())
@@ -51,7 +54,10 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         val ttsInstructions: String = ApiKeyManager.DEFAULT_TTS_INSTRUCTIONS,
         val interactiveVoiceEnabled: Boolean = false,
         val silenceTimeoutMs: Int = ApiKeyManager.DEFAULT_SILENCE_TIMEOUT_MS,
-        val followUpPrompt: String = SystemPrompts.FOLLOW_UP_PROMPT
+        val followUpPrompt: String = SystemPrompts.FOLLOW_UP_PROMPT,
+        // Compat providers
+        val compatProviders: List<CompatibleProviderConfig> = emptyList(),
+        val selectedCompatProviderId: String? = null
     )
 
     init {
@@ -86,7 +92,9 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                 ttsInstructions = apiKeyManager.getTtsInstructions(),
                 interactiveVoiceEnabled = apiKeyManager.getInteractiveVoiceEnabled(),
                 silenceTimeoutMs = apiKeyManager.getSilenceTimeoutMs(),
-                followUpPrompt = apiKeyManager.getFollowUpPrompt()
+                followUpPrompt = apiKeyManager.getFollowUpPrompt(),
+                compatProviders = compatibleProviderManager.getProviders(),
+                selectedCompatProviderId = apiKeyManager.getSelectedCompatProviderId()
             )
         }
     }
@@ -193,9 +201,52 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         )
     }
 
+    // Compat provider methods
+
+    fun addCompatProvider(config: CompatibleProviderConfig) {
+        compatibleProviderManager.saveProvider(config)
+        refreshState()
+    }
+
+    fun saveCompatProvider(config: CompatibleProviderConfig) {
+        compatibleProviderManager.saveProvider(config)
+        refreshState()
+    }
+
+    fun deleteCompatProvider(id: String) {
+        compatibleProviderManager.deleteProvider(id)
+        val currentSelected = apiKeyManager.getSelectedCompatProviderId()
+        if (currentSelected == id) {
+            apiKeyManager.setSelectedCompatProviderId(null)
+        }
+        refreshState()
+    }
+
+    fun saveCompatProviderKey(id: String, key: String) {
+        compatibleProviderManager.saveProviderKey(id, key)
+        refreshState()
+    }
+
+    fun deleteCompatProviderKey(id: String) {
+        compatibleProviderManager.deleteProviderKey(id)
+        refreshState()
+    }
+
+    fun selectCompatProvider(id: String?) {
+        if (id != null) {
+            apiKeyManager.setSelectedCompatProviderId(id)
+            // Clear legacy model to avoid ambiguity — set to default
+            apiKeyManager.setSelectedModel(ApiKeyManager.MODEL_PRO)
+        } else {
+            apiKeyManager.setSelectedCompatProviderId(null)
+        }
+        refreshState()
+    }
+
     fun setModel(model: String) {
         apiKeyManager.setSelectedModel(model)
-        _state.value = _state.value.copy(selectedModel = model)
+        apiKeyManager.setSelectedCompatProviderId(null)
+        _state.value = _state.value.copy(selectedModel = model, selectedCompatProviderId = null)
     }
 
     fun setReasoningEffort(effort: String) {

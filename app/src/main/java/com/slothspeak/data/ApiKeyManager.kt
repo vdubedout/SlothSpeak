@@ -159,6 +159,19 @@ class ApiKeyManager(context: Context) {
         return getGrokKey() != null
     }
 
+    // Compat provider selection
+    fun getSelectedCompatProviderId(): String? {
+        return prefs.getString(KEY_SELECTED_COMPAT_PROVIDER, null)?.takeIf { it.isNotBlank() }
+    }
+
+    fun setSelectedCompatProviderId(id: String?) {
+        if (id != null) {
+            prefs.edit().putString(KEY_SELECTED_COMPAT_PROVIDER, id).apply()
+        } else {
+            prefs.edit().remove(KEY_SELECTED_COMPAT_PROVIDER).apply()
+        }
+    }
+
     // System prompt methods
     fun getSystemPrompt(): String {
         return prefs.getString(KEY_SYSTEM_PROMPT, null) ?: SystemPrompts.SYSTEM_PROMPT
@@ -234,6 +247,7 @@ class ApiKeyManager(context: Context) {
         private const val KEY_CLAUDE_API_KEY = "claude_api_key"
         private const val KEY_CLAUDE_EFFORT = "claude_effort"
         private const val KEY_GROK_API_KEY = "grok_api_key"
+        private const val KEY_SELECTED_COMPAT_PROVIDER = "selected_compat_provider_id"
         private const val KEY_MODEL = "selected_model"
         private const val KEY_REASONING_EFFORT = "reasoning_effort"
         private const val KEY_THINKING_LEVEL = "gemini_thinking_level"

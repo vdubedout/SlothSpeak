@@ -22,6 +22,7 @@ import com.slothspeak.api.ApiException
 import com.slothspeak.api.ClaudeClient
 import com.slothspeak.api.GeminiClient
 import com.slothspeak.api.GrokClient
+import com.slothspeak.api.OpenAiCompatibleClient
 import com.slothspeak.api.OpenAIClient
 import com.slothspeak.audio.AudioFocusManager
 import com.slothspeak.audio.AudioPlayer
@@ -29,6 +30,7 @@ import com.slothspeak.audio.BluetoothAudioRouter
 import com.slothspeak.audio.TtsProcessor
 import com.slothspeak.audio.VadAudioRecorder
 import com.slothspeak.data.ApiKeyManager
+import com.slothspeak.data.CompatibleProviderManager
 import com.slothspeak.data.db.SlothSpeakDatabase
 import com.slothspeak.data.db.entities.Conversation
 import com.slothspeak.data.db.entities.QAPair
@@ -82,6 +84,8 @@ class SlothSpeakService : Service() {
     private lateinit var geminiClient: GeminiClient
     private lateinit var claudeClient: ClaudeClient
     private lateinit var grokClient: GrokClient
+    private lateinit var compatibleProviderManager: CompatibleProviderManager
+    private lateinit var openAiCompatibleClient: OpenAiCompatibleClient
     private lateinit var audioPlayer: AudioPlayer
     private lateinit var database: SlothSpeakDatabase
     private lateinit var audioFocusManager: AudioFocusManager
@@ -95,6 +99,7 @@ class SlothSpeakService : Service() {
     private var lastLlmResponseSeconds: Int = 0
     private var lastReasoningEffort: String? = null
     @Volatile private var lastAnswerTextRich: String? = null
+    @Volatile private var lastReasoningText: String? = null
 
     sealed class PipelineState {
         data object Idle : PipelineState()
@@ -131,7 +136,8 @@ class SlothSpeakService : Service() {
             val totalChunks: Int,
             val audioFiles: List<File>,
             val isPaused: Boolean = false,
-            val answerTextRich: String? = null
+            val answerTextRich: String? = null,
+            val reasoningText: String? = null
         ) : PipelineState()
         data class Complete(
             val questionText: String,
@@ -142,7 +148,8 @@ class SlothSpeakService : Service() {
             val model: String,
             val reasoningEffort: String?,
             val llmResponseSeconds: Int,
-            val answerTextRich: String? = null
+            val answerTextRich: String? = null,
+            val reasoningText: String? = null
         ) : PipelineState()
         data class ListeningForFollowUp(
             val conversationId: Long,
@@ -181,6 +188,8 @@ class SlothSpeakService : Service() {
         geminiClient = GeminiClient(apiKeyManager)
         claudeClient = ClaudeClient(apiKeyManager)
         grokClient = GrokClient(apiKeyManager)
+        compatibleProviderManager = CompatibleProviderManager(applicationContext)
+        openAiCompatibleClient = OpenAiCompatibleClient(compatibleProviderManager)
         audioPlayer = AudioPlayer()
         database = SlothSpeakDatabase.getInstance(applicationContext)
         bluetoothRouter = BluetoothAudioRouter(applicationContext)
@@ -332,7 +341,8 @@ class SlothSpeakService : Service() {
                 pending.questionText, pending.answerText, pending.responseId,
                 pending.conversationId, pending.audioFiles, pending.model,
                 pending.reasoningEffort, pending.llmResponseSeconds,
-                pending.answerTextRich
+                pending.answerTextRich,
+                reasoningText = pending.reasoningText
             )
         } else {
             val lastState = lastPipelineProcessingState
@@ -426,6 +436,10 @@ class SlothSpeakService : Service() {
         val isDeepResearch = model == ApiKeyManager.MODEL_DEEP_RESEARCH
         val isGeminiDeepResearch = model == ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH
         val isAnyDeepResearch = isDeepResearch || isGeminiDeepResearch
+        val compatId = apiKeyManager.getSelectedCompatProviderId()
+        val isCompat = compatId != null && compatibleProviderManager.getProvider(compatId) != null
+        val compatProvider = if (isCompat) compatibleProviderManager.getProvider(compatId!!) else null
+        val dbModel = compatProvider?.modelId ?: model
 
         // Step 1: Transcribe
         emitProcessingState(PipelineState.Transcribing, "Transcribing question...")
@@ -452,7 +466,7 @@ class SlothSpeakService : Service() {
                         questionText = questionText,
                         answerText = "",
                         responseId = "",
-                        model = model
+                        model = dbModel
                     )
                 )
             }
@@ -470,6 +484,7 @@ class SlothSpeakService : Service() {
         // Step 2: LLM
         val effortLabel = when {
             isAnyDeepResearch -> ""
+            isCompat && compatProvider != null -> if (compatProvider.thinkingEnabled) compatProvider.reasoningEffort else ""
             isClaude -> claudeEffort
             isGemini -> thinkingLevel
             isGrok -> ""
@@ -479,6 +494,7 @@ class SlothSpeakService : Service() {
         val providerName = when {
             isGeminiDeepResearch -> "Gemini Deep Research"
             isDeepResearch -> "Deep Research"
+            isCompat && compatProvider != null -> compatProvider.displayName
             isClaude -> "Claude"
             isGemini -> "Gemini"
             isGrok -> "Grok"
@@ -520,6 +536,7 @@ class SlothSpeakService : Service() {
 
         val answerText: String
         val responseId: String
+        lastReasoningText = null
         val llmStartTime = System.currentTimeMillis()
         try {
             if (isDeepResearch) {
@@ -583,6 +600,30 @@ class SlothSpeakService : Service() {
                 lastReasoningEffort = null
                 answerText = result.answerText
                 lastAnswerTextRich = result.answerTextRich
+                responseId = result.responseId
+            } else if (isCompat && compatProvider != null) {
+                // Load conversation history for compat provider
+                val history = if (existingConversationId != null) {
+                    withContext(Dispatchers.IO) {
+                        database.conversationDao()
+                            .getQAPairsForConversationOnce(existingConversationId)
+                            .map { it.questionText to it.answerText }
+                    }
+                } else {
+                    emptyList()
+                }
+                val result = openAiCompatibleClient.createResponse(
+                    question = questionText,
+                    history = history,
+                    provider = compatProvider,
+                    systemPrompt = apiKeyManager.getSystemPrompt()
+                )
+                timerJob.cancel()
+                lastLlmResponseSeconds = ((System.currentTimeMillis() - llmStartTime) / 1000).toInt()
+                lastReasoningEffort = if (compatProvider.thinkingEnabled) compatProvider.reasoningEffort else null
+                answerText = result.answerText
+                lastReasoningText = result.reasoningText
+                lastAnswerTextRich = null
                 responseId = result.responseId
             } else {
                 val llmResponse = openAIClient.createResponse(
@@ -666,10 +707,11 @@ class SlothSpeakService : Service() {
                     answerText = answerText,
                     audioFilePaths = audioPathsJson,
                     responseId = responseId,
-                    model = model,
+                    model = dbModel,
                     reasoningEffort = lastReasoningEffort,
                     llmResponseSeconds = lastLlmResponseSeconds,
-                    answerTextRich = lastAnswerTextRich
+                    answerTextRich = lastAnswerTextRich,
+                    reasoningText = lastReasoningText
                 )
                 earlyConvId
             } else {
@@ -684,10 +726,11 @@ class SlothSpeakService : Service() {
                         answerText = answerText,
                         audioFilePaths = audioPathsJson,
                         responseId = responseId,
-                        model = model,
+                        model = dbModel,
                         reasoningEffort = lastReasoningEffort,
                         llmResponseSeconds = lastLlmResponseSeconds,
-                        answerTextRich = lastAnswerTextRich
+                        answerTextRich = lastAnswerTextRich,
+                        reasoningText = lastReasoningText
                     )
                 )
                 convId
@@ -705,8 +748,9 @@ class SlothSpeakService : Service() {
         // Step 5: Playback (on separate job so replay doesn't kill processing)
         launchPipelinePlayback(
             questionText, answerText, responseId, conversationId,
-            audioFiles, model, lastReasoningEffort, lastLlmResponseSeconds,
-            lastAnswerTextRich
+            audioFiles, dbModel, lastReasoningEffort, lastLlmResponseSeconds,
+            lastAnswerTextRich,
+            reasoningText = lastReasoningText
         )
     }
 
@@ -719,7 +763,8 @@ class SlothSpeakService : Service() {
         model: String,
         reasoningEffort: String?,
         llmResponseSeconds: Int,
-        answerTextRich: String? = null
+        answerTextRich: String? = null,
+        reasoningText: String? = null
     ) {
         if (playbackJob?.isActive == true) {
             // Replay in progress — save result so it can be restored later
@@ -727,7 +772,8 @@ class SlothSpeakService : Service() {
                 questionText, answerText, responseId, conversationId, audioFiles,
                 model = model, reasoningEffort = reasoningEffort,
                 llmResponseSeconds = llmResponseSeconds,
-                answerTextRich = answerTextRich
+                answerTextRich = answerTextRich,
+                reasoningText = reasoningText
             )
             return
         }
@@ -748,7 +794,8 @@ class SlothSpeakService : Service() {
                         model = model,
                         reasoningEffort = reasoningEffort,
                         llmResponseSeconds = llmResponseSeconds,
-                        answerTextRich = answerTextRich
+                        answerTextRich = answerTextRich,
+                        reasoningText = reasoningText
                     )
                     updateNotification("Answer ready (skipped during call)")
                     delay(1000)
@@ -767,7 +814,8 @@ class SlothSpeakService : Service() {
                         model = model,
                         reasoningEffort = reasoningEffort,
                         llmResponseSeconds = llmResponseSeconds,
-                        answerTextRich = answerTextRich
+                        answerTextRich = answerTextRich,
+                        reasoningText = reasoningText
                     )
                     updateNotification("Answer ready (muted)")
                     delay(1000)
@@ -789,7 +837,8 @@ class SlothSpeakService : Service() {
                 _pipelineState.value = PipelineState.Playing(
                     questionText, answerText, responseId, conversationId,
                     1, audioFiles.size, audioFiles,
-                    answerTextRich = answerTextRich
+                    answerTextRich = answerTextRich,
+                    reasoningText = reasoningText
                 )
                 updateNotification("Playing answer...")
                 activateMediaSession()
@@ -802,7 +851,8 @@ class SlothSpeakService : Service() {
                                 playState.currentChunk, playState.totalChunks,
                                 audioFiles,
                                 isPaused = playState.isPaused,
-                                answerTextRich = answerTextRich
+                                answerTextRich = answerTextRich,
+                                reasoningText = reasoningText
                             )
                         }
                     }
@@ -847,7 +897,8 @@ class SlothSpeakService : Service() {
                         model = model,
                         reasoningEffort = reasoningEffort,
                         llmResponseSeconds = llmResponseSeconds,
-                        answerTextRich = answerTextRich
+                        answerTextRich = answerTextRich,
+                        reasoningText = reasoningText
                     )
                     updateNotification("Answer complete")
                     delay(1000)
@@ -968,8 +1019,13 @@ class SlothSpeakService : Service() {
                             val isDeepResearch = model == ApiKeyManager.MODEL_DEEP_RESEARCH
                             val isGeminiDeepResearch = model == ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH
                             val isAnyDeepResearch = isDeepResearch || isGeminiDeepResearch
+                            val compatId = apiKeyManager.getSelectedCompatProviderId()
+                            val isCompat = compatId != null && compatibleProviderManager.getProvider(compatId) != null
+                            val compatProvider = if (isCompat) compatibleProviderManager.getProvider(compatId!!) else null
+                            val dbModel = compatProvider?.modelId ?: model
                             val effortLabel = when {
                                 isAnyDeepResearch -> ""
+                                isCompat && compatProvider != null -> if (compatProvider.thinkingEnabled) compatProvider.reasoningEffort else ""
                                 isClaude -> claudeEffort
                                 isGemini -> thinkingLevel
                                 isGrok -> ""
@@ -979,6 +1035,7 @@ class SlothSpeakService : Service() {
                             val providerName = when {
                                 isGeminiDeepResearch -> "Gemini Deep Research"
                                 isDeepResearch -> "Deep Research"
+                                isCompat && compatProvider != null -> compatProvider.displayName
                                 isClaude -> "Claude"
                                 isGemini -> "Gemini"
                                 isGrok -> "Grok"
@@ -1015,6 +1072,7 @@ class SlothSpeakService : Service() {
                                 }
                             }
 
+                            lastReasoningText = null
                             val llmStartTime = System.currentTimeMillis()
                             val answer: String
                             val respId: String
@@ -1058,6 +1116,21 @@ class SlothSpeakService : Service() {
                                 lastReasoningEffort = null
                                 answer = result.answerText
                                 lastAnswerTextRich = result.answerTextRich
+                                respId = result.responseId
+                            } else if (isCompat && compatProvider != null) {
+                                // Compat provider retry — no history (match Claude retry pattern)
+                                val result = openAiCompatibleClient.createResponse(
+                                    question = question,
+                                    history = emptyList(),
+                                    provider = compatProvider,
+                                    systemPrompt = apiKeyManager.getSystemPrompt()
+                                )
+                                timerJob.cancel()
+                                lastLlmResponseSeconds = ((System.currentTimeMillis() - llmStartTime) / 1000).toInt()
+                                lastReasoningEffort = if (compatProvider.thinkingEnabled) compatProvider.reasoningEffort else null
+                                answer = result.answerText
+                                lastReasoningText = result.reasoningText
+                                lastAnswerTextRich = null
                                 respId = result.responseId
                             } else {
                                 val response = openAIClient.createResponse(
@@ -1132,6 +1205,9 @@ class SlothSpeakService : Service() {
         answerTextRich: String? = null
     ) {
         val model = apiKeyManager.getSelectedModel()
+        val compatId = apiKeyManager.getSelectedCompatProviderId()
+        val compatProvider = compatibleProviderManager.getProvider(compatId ?: "")
+        val dbModel = compatProvider?.modelId ?: model
         val sessionDir = File(filesDir, "audio/${System.currentTimeMillis()}")
         val ttsProcessor = TtsProcessor(openAIClient, sessionDir, apiKeyManager.getSelectedVoice(), apiKeyManager.getTtsInstructions())
 
@@ -1184,10 +1260,11 @@ class SlothSpeakService : Service() {
                     answerText = answerText,
                     audioFilePaths = audioPathsJson,
                     responseId = responseId,
-                    model = model,
+                    model = dbModel,
                     reasoningEffort = reasoningEffort,
                     llmResponseSeconds = llmResponseSeconds,
-                    answerTextRich = answerTextRich
+                    answerTextRich = answerTextRich,
+                    reasoningText = lastReasoningText
                 )
                 earlyConvId
             } else {
@@ -1199,10 +1276,11 @@ class SlothSpeakService : Service() {
                         answerText = answerText,
                         audioFilePaths = audioPathsJson,
                         responseId = responseId,
-                        model = model,
+                        model = dbModel,
                         reasoningEffort = reasoningEffort,
                         llmResponseSeconds = llmResponseSeconds,
-                        answerTextRich = answerTextRich
+                        answerTextRich = answerTextRich,
+                        reasoningText = lastReasoningText
                     )
                 )
                 convId
@@ -1220,8 +1298,9 @@ class SlothSpeakService : Service() {
         // Playback (on separate job so replay doesn't kill processing)
         launchPipelinePlayback(
             questionText, answerText, responseId, conversationId,
-            audioFiles, model, reasoningEffort, llmResponseSeconds,
-            answerTextRich
+            audioFiles, dbModel, reasoningEffort, llmResponseSeconds,
+            answerTextRich,
+            reasoningText = lastReasoningText
         )
     }
 
@@ -1455,6 +1534,10 @@ class SlothSpeakService : Service() {
         val isGemini = model == ApiKeyManager.MODEL_GEMINI_PRO || model == ApiKeyManager.MODEL_GEMINI_PRO_35
         val isClaude = model == ApiKeyManager.MODEL_CLAUDE_OPUS
         val isGrok = model == ApiKeyManager.MODEL_GROK
+        val compatId = apiKeyManager.getSelectedCompatProviderId()
+        val isCompat = compatId != null && compatibleProviderManager.getProvider(compatId) != null
+        val compatProvider = if (isCompat) compatibleProviderManager.getProvider(compatId!!) else null
+        val dbModel = compatProvider?.modelId ?: model
 
         emitProcessingState(PipelineState.Transcribed(questionText))
 
@@ -1467,7 +1550,7 @@ class SlothSpeakService : Service() {
                         questionText = questionText,
                         answerText = "",
                         responseId = "",
-                        model = model
+                        model = dbModel
                     )
                 )
             }
@@ -1482,6 +1565,7 @@ class SlothSpeakService : Service() {
 
         // Step 2: LLM
         val effortLabel = when {
+            isCompat && compatProvider != null -> if (compatProvider.thinkingEnabled) compatProvider.reasoningEffort else ""
             isClaude -> claudeEffort
             isGemini -> thinkingLevel
             isGrok -> ""
@@ -1489,6 +1573,7 @@ class SlothSpeakService : Service() {
             else -> ""
         }
         val providerName = when {
+            isCompat && compatProvider != null -> compatProvider.displayName
             isClaude -> "Claude"
             isGemini -> "Gemini"
             isGrok -> "Grok"
@@ -1526,6 +1611,7 @@ class SlothSpeakService : Service() {
 
         val answerText: String
         val responseId: String
+        lastReasoningText = null
         val llmStartTime = System.currentTimeMillis()
         try {
             if (isClaude) {
@@ -1561,6 +1647,25 @@ class SlothSpeakService : Service() {
                 lastReasoningEffort = null
                 answerText = result.answerText
                 lastAnswerTextRich = result.answerTextRich
+                responseId = result.responseId
+            } else if (isCompat && compatProvider != null) {
+                val history = withContext(Dispatchers.IO) {
+                    database.conversationDao()
+                        .getQAPairsForConversationOnce(existingConversationId)
+                        .map { it.questionText to it.answerText }
+                }
+                val result = openAiCompatibleClient.createResponse(
+                    question = questionText,
+                    history = history,
+                    provider = compatProvider,
+                    systemPrompt = apiKeyManager.getSystemPrompt()
+                )
+                timerJob.cancel()
+                lastLlmResponseSeconds = ((System.currentTimeMillis() - llmStartTime) / 1000).toInt()
+                lastReasoningEffort = if (compatProvider.thinkingEnabled) compatProvider.reasoningEffort else null
+                answerText = result.answerText
+                lastReasoningText = result.reasoningText
+                lastAnswerTextRich = null
                 responseId = result.responseId
             } else {
                 val llmResponse = openAIClient.createResponse(
@@ -1628,10 +1733,11 @@ class SlothSpeakService : Service() {
                     answerText = answerText,
                     audioFilePaths = audioPathsJson,
                     responseId = responseId,
-                    model = model,
+                    model = dbModel,
                     reasoningEffort = lastReasoningEffort,
                     llmResponseSeconds = lastLlmResponseSeconds,
-                    answerTextRich = lastAnswerTextRich
+                    answerTextRich = lastAnswerTextRich,
+                    reasoningText = lastReasoningText
                 )
             } else {
                 database.conversationDao().insertQAPair(
@@ -1641,10 +1747,11 @@ class SlothSpeakService : Service() {
                         answerText = answerText,
                         audioFilePaths = audioPathsJson,
                         responseId = responseId,
-                        model = model,
+                        model = dbModel,
                         reasoningEffort = lastReasoningEffort,
                         llmResponseSeconds = lastLlmResponseSeconds,
-                        answerTextRich = lastAnswerTextRich
+                        answerTextRich = lastAnswerTextRich,
+                        reasoningText = lastReasoningText
                     )
                 )
             }
@@ -1660,8 +1767,9 @@ class SlothSpeakService : Service() {
         // Step 5: Playback (loops back to follow-up listening via launchPipelinePlayback)
         launchPipelinePlayback(
             questionText, answerText, responseId, existingConversationId,
-            audioFiles, model, lastReasoningEffort, lastLlmResponseSeconds,
-            lastAnswerTextRich
+            audioFiles, dbModel, lastReasoningEffort, lastLlmResponseSeconds,
+            lastAnswerTextRich,
+            reasoningText = lastReasoningText
         )
     }
 
@@ -1856,7 +1964,8 @@ class SlothSpeakService : Service() {
                         pending.questionText, pending.answerText, pending.responseId,
                         pending.conversationId, pending.audioFiles, pending.model,
                         pending.reasoningEffort, pending.llmResponseSeconds,
-                        pending.answerTextRich
+                        pending.answerTextRich,
+                        reasoningText = pending.reasoningText
                     )
                 } else {
                     _pipelineState.value = PipelineState.Idle

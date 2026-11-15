@@ -22,7 +22,7 @@ There is no server backend. The app calls AI provider APIs directly from the dev
 
 ## Features
 
-**Multi-provider AI** — Four providers, eight models. Switch between OpenAI GPT-5.5, Gemini 3.1 Pro, Claude Opus 4.8, and Grok 4.3. GPT-5.5 Pro, Gemini, and Claude support configurable reasoning effort/thinking level.
+**Multi-provider AI** — Four built-in providers, eight models, plus generic OpenAI-compatible provider support. Switch between OpenAI GPT-5.5, Gemini 3.1 Pro, Claude Opus 4.8, Grok 4.3, Z.ai GLM 5.3, DeepSeek V4 Flash, or any self-hosted OpenAI-compatible API (Qwen via vLLM/Ollama/LM Studio). GPT-5.5 Pro, Gemini, and Claude support configurable reasoning effort/thinking level.
 
 **Multi-turn conversations** — Ask follow-up questions with full context. OpenAI and Grok chain via `previous_response_id`; Gemini and Claude send explicit conversation history.
 
@@ -31,6 +31,8 @@ There is no server backend. The app calls AI provider APIs directly from the dev
 **Deep Research** — OpenAI and Gemini deep research models perform extended async research with polling, delivering thorough answers backed by web sources.
 
 **Web search and X search** — Toggle web search for grounded, up-to-date answers (provider-dependent). Grok additionally supports X (Twitter) search.
+
+**Reasoning traces** — Compatible providers' thinking/reasoning content is captured, saved to the database, and displayed as a collapsible 'View thinking' section in the answer card.
 
 **Citations** — Responses with citations display numbered footnotes and a sources list. Clean text (without citation markers) is sent to TTS for natural reading.
 
