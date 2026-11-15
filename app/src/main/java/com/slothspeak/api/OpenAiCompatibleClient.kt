@@ -58,8 +58,9 @@ class OpenAiCompatibleClient(
 
         val httpClient = getOrCreateHttpClient(baseUrl, apiKey)
 
+        val cacheKey = "${baseUrl}_${apiKey ?: ""}"
         val service: ChatCompletionsService = try {
-            serviceCache.getOrPut(baseUrl) {
+            serviceCache.getOrPut(cacheKey) {
                 Retrofit.Builder()
                     .baseUrl(baseUrl)
                     .client(httpClient)

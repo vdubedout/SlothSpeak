@@ -341,7 +341,8 @@ class SlothSpeakService : Service() {
                 pending.questionText, pending.answerText, pending.responseId,
                 pending.conversationId, pending.audioFiles, pending.model,
                 pending.reasoningEffort, pending.llmResponseSeconds,
-                pending.answerTextRich
+                pending.answerTextRich,
+                reasoningText = pending.reasoningText
             )
         } else {
             val lastState = lastPipelineProcessingState
@@ -761,7 +762,8 @@ class SlothSpeakService : Service() {
         model: String,
         reasoningEffort: String?,
         llmResponseSeconds: Int,
-        answerTextRich: String? = null
+        answerTextRich: String? = null,
+        reasoningText: String? = null
     ) {
         if (playbackJob?.isActive == true) {
             // Replay in progress — save result so it can be restored later
@@ -769,7 +771,8 @@ class SlothSpeakService : Service() {
                 questionText, answerText, responseId, conversationId, audioFiles,
                 model = model, reasoningEffort = reasoningEffort,
                 llmResponseSeconds = llmResponseSeconds,
-                answerTextRich = answerTextRich
+                answerTextRich = answerTextRich,
+                reasoningText = reasoningText
             )
             return
         }
@@ -790,7 +793,8 @@ class SlothSpeakService : Service() {
                         model = model,
                         reasoningEffort = reasoningEffort,
                         llmResponseSeconds = llmResponseSeconds,
-                        answerTextRich = answerTextRich
+                        answerTextRich = answerTextRich,
+                        reasoningText = reasoningText
                     )
                     updateNotification("Answer ready (skipped during call)")
                     delay(1000)
@@ -809,7 +813,8 @@ class SlothSpeakService : Service() {
                         model = model,
                         reasoningEffort = reasoningEffort,
                         llmResponseSeconds = llmResponseSeconds,
-                        answerTextRich = answerTextRich
+                        answerTextRich = answerTextRich,
+                        reasoningText = reasoningText
                     )
                     updateNotification("Answer ready (muted)")
                     delay(1000)
@@ -831,7 +836,8 @@ class SlothSpeakService : Service() {
                 _pipelineState.value = PipelineState.Playing(
                     questionText, answerText, responseId, conversationId,
                     1, audioFiles.size, audioFiles,
-                    answerTextRich = answerTextRich
+                    answerTextRich = answerTextRich,
+                    reasoningText = reasoningText
                 )
                 updateNotification("Playing answer...")
                 activateMediaSession()
@@ -844,7 +850,8 @@ class SlothSpeakService : Service() {
                                 playState.currentChunk, playState.totalChunks,
                                 audioFiles,
                                 isPaused = playState.isPaused,
-                                answerTextRich = answerTextRich
+                                answerTextRich = answerTextRich,
+                                reasoningText = reasoningText
                             )
                         }
                     }
@@ -889,7 +896,8 @@ class SlothSpeakService : Service() {
                         model = model,
                         reasoningEffort = reasoningEffort,
                         llmResponseSeconds = llmResponseSeconds,
-                        answerTextRich = answerTextRich
+                        answerTextRich = answerTextRich,
+                        reasoningText = reasoningText
                     )
                     updateNotification("Answer complete")
                     delay(1000)
@@ -1758,7 +1766,8 @@ class SlothSpeakService : Service() {
         launchPipelinePlayback(
             questionText, answerText, responseId, existingConversationId,
             audioFiles, dbModel, lastReasoningEffort, lastLlmResponseSeconds,
-            lastAnswerTextRich
+            lastAnswerTextRich,
+            reasoningText = lastReasoningText
         )
     }
 
@@ -1953,7 +1962,8 @@ class SlothSpeakService : Service() {
                         pending.questionText, pending.answerText, pending.responseId,
                         pending.conversationId, pending.audioFiles, pending.model,
                         pending.reasoningEffort, pending.llmResponseSeconds,
-                        pending.answerTextRich
+                        pending.answerTextRich,
+                        reasoningText = pending.reasoningText
                     )
                 } else {
                     _pipelineState.value = PipelineState.Idle
