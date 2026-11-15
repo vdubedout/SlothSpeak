@@ -39,7 +39,7 @@ data class ChatCompletionResponse(
 
 @JsonClass(generateAdapter = true)
 data class ChatChoice(
-    val index: Int,
+    val index: Int? = 0,
     val message: ChatResponseMessage,
     @Json(name = "finish_reason")
     val finishReason: String? = null

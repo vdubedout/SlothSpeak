@@ -611,10 +611,12 @@ fun SettingsScreen(
                     // OpenAI
                     ProviderHeader("OpenAI")
 
+                    val compatIsNull = state.selectedCompatProviderId == null
+
                     ModelOption(
                         title = "GPT-5.5",
                         description = "Excellent quality, fast responses, lower cost.",
-                        selected = state.selectedModel == ApiKeyManager.MODEL_STANDARD,
+                        selected = compatIsNull && state.selectedModel == ApiKeyManager.MODEL_STANDARD,
                         onClick = { viewModel.setModel(ApiKeyManager.MODEL_STANDARD) }
                     )
 
@@ -623,7 +625,7 @@ fun SettingsScreen(
                     ModelOption(
                         title = "GPT-5.5 Pro",
                         description = "Maximum reasoning, highest quality answers. Slower and more expensive.",
-                        selected = state.selectedModel == ApiKeyManager.MODEL_PRO,
+                        selected = compatIsNull && state.selectedModel == ApiKeyManager.MODEL_PRO,
                         onClick = { viewModel.setModel(ApiKeyManager.MODEL_PRO) }
                     )
 
@@ -632,7 +634,7 @@ fun SettingsScreen(
                     ModelOption(
                         title = "o3 Deep Research",
                         description = "Multi-minute deep web research using o3.",
-                        selected = state.selectedModel == ApiKeyManager.MODEL_DEEP_RESEARCH,
+                        selected = compatIsNull && state.selectedModel == ApiKeyManager.MODEL_DEEP_RESEARCH,
                         onClick = { viewModel.setModel(ApiKeyManager.MODEL_DEEP_RESEARCH) }
                     )
 
@@ -644,7 +646,7 @@ fun SettingsScreen(
                     ModelOption(
                         title = "Gemini 3.1 Pro",
                         description = "Google's most intelligent model. Requires separate Gemini API key.",
-                        selected = state.selectedModel == ApiKeyManager.MODEL_GEMINI_PRO,
+                        selected = compatIsNull && state.selectedModel == ApiKeyManager.MODEL_GEMINI_PRO,
                         onClick = { viewModel.setModel(ApiKeyManager.MODEL_GEMINI_PRO) }
                     )
 
@@ -653,7 +655,7 @@ fun SettingsScreen(
                     ModelOption(
                         title = "Gemini 3.5 Pro",
                         description = "Google's latest flagship model. Requires separate Gemini API key.",
-                        selected = state.selectedModel == ApiKeyManager.MODEL_GEMINI_PRO_35,
+                        selected = compatIsNull && state.selectedModel == ApiKeyManager.MODEL_GEMINI_PRO_35,
                         onClick = { viewModel.setModel(ApiKeyManager.MODEL_GEMINI_PRO_35) }
                     )
 
@@ -662,7 +664,7 @@ fun SettingsScreen(
                     ModelOption(
                         title = "Gemini Deep Research",
                         description = "Multi-minute deep web research. Uses Gemini API key.",
-                        selected = state.selectedModel == ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH,
+                        selected = compatIsNull && state.selectedModel == ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH,
                         onClick = { viewModel.setModel(ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH) }
                     )
 
@@ -674,7 +676,7 @@ fun SettingsScreen(
                     ModelOption(
                         title = "Claude Opus 4.8",
                         description = "Anthropic's most capable model with adaptive thinking. Requires separate Claude API key.",
-                        selected = state.selectedModel == ApiKeyManager.MODEL_CLAUDE_OPUS,
+                        selected = compatIsNull && state.selectedModel == ApiKeyManager.MODEL_CLAUDE_OPUS,
                         onClick = { viewModel.setModel(ApiKeyManager.MODEL_CLAUDE_OPUS) }
                     )
 
@@ -686,7 +688,7 @@ fun SettingsScreen(
                     ModelOption(
                         title = "Grok 4.3",
                         description = "xAI's most capable model. Requires separate xAI API key.",
-                        selected = state.selectedModel == ApiKeyManager.MODEL_GROK,
+                        selected = compatIsNull && state.selectedModel == ApiKeyManager.MODEL_GROK,
                         onClick = { viewModel.setModel(ApiKeyManager.MODEL_GROK) }
                     )
 
@@ -1784,7 +1786,7 @@ fun SettingsScreen(
                         )
                         Spacer(modifier = Modifier.height(8.dp))
 
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                             Button(
                                 onClick = {
                                     val provider = CompatibleProviderConfig.createZai("zai-${System.currentTimeMillis()}")
@@ -1803,6 +1805,28 @@ fun SettingsScreen(
                                 modifier = Modifier.weight(1f)
                             ) {
                                 Text("Z.ai", maxLines = 1)
+                            }
+                            Button(
+                                onClick = {
+                                    val provider = CompatibleProviderConfig.createZai("zai-${System.currentTimeMillis()}").copy(
+                                        displayName = "Z.ai Flash",
+                                        modelId = "glm-5.3-flash"
+                                    )
+                                    editingCompatProvider = provider
+                                    compatEditDisplayName = provider.displayName
+                                    compatEditBaseUrl = provider.baseUrl
+                                    compatEditModelId = provider.modelId
+                                    compatEditKey = ""
+                                    compatEditThinkingEnabled = provider.thinkingEnabled
+                                    compatEditReasoningEffort = provider.reasoningEffort
+                                    compatEditSendThinkingParams = provider.sendThinkingParams
+                                    compatEditMaxTokens = provider.maxTokens?.toString() ?: ""
+                                    compatSelectedTemplate = "zai"
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = AccentGreen.copy(alpha = 0.7f)),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Z.ai F.", maxLines = 1)
                             }
                             Button(
                                 onClick = {
@@ -2021,6 +2045,9 @@ fun SettingsScreen(
                         viewModel.saveCompatProvider(updated)
                         if (compatEditKey.isNotBlank()) {
                             viewModel.saveCompatProviderKey(updated.id, compatEditKey)
+                        } else {
+                            // Blank key on existing provider = clear it
+                            viewModel.deleteCompatProviderKey(updated.id)
                         }
                         showCompatAddDialog = false
                         editingCompatProvider = null

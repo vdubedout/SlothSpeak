@@ -24,6 +24,28 @@ class OpenAiCompatibleClient(
 ) {
 
     private val moshi = Moshi.Builder().build()
+    private val httpClientCache = mutableMapOf<String, OkHttpClient>()
+    private val serviceCache = mutableMapOf<String, ChatCompletionsService>()
+
+    private fun getOrCreateHttpClient(baseUrl: String, apiKey: String?): OkHttpClient {
+        val cacheKey = "${baseUrl}_${apiKey ?: ""}"
+        return httpClientCache.getOrPut(cacheKey) {
+            val authInterceptor = Interceptor { chain ->
+                val requestBuilder = chain.request().newBuilder()
+                if (!apiKey.isNullOrBlank()) {
+                    requestBuilder.addHeader("Authorization", "Bearer $apiKey")
+                }
+                chain.proceed(requestBuilder.build())
+            }
+
+            OkHttpClient.Builder()
+                .addInterceptor(authInterceptor)
+                .connectTimeout(30, TimeUnit.SECONDS)
+                .readTimeout(1500, TimeUnit.SECONDS)
+                .writeTimeout(30, TimeUnit.SECONDS)
+                .build()
+        }
+    }
 
     suspend fun createResponse(
         question: String,
@@ -34,28 +56,17 @@ class OpenAiCompatibleClient(
         val baseUrl = normalizeBaseUrl(provider.baseUrl)
         val apiKey = compatibleProviderManager.getProviderKey(provider.id)
 
-        val authInterceptor = Interceptor { chain ->
-            val requestBuilder = chain.request().newBuilder()
-            if (!apiKey.isNullOrBlank()) {
-                requestBuilder.addHeader("Authorization", "Bearer $apiKey")
-            }
-            chain.proceed(requestBuilder.build())
-        }
-
-        val httpClient = OkHttpClient.Builder()
-            .addInterceptor(authInterceptor)
-            .connectTimeout(30, TimeUnit.SECONDS)
-            .readTimeout(1500, TimeUnit.SECONDS)
-            .writeTimeout(30, TimeUnit.SECONDS)
-            .build()
+        val httpClient = getOrCreateHttpClient(baseUrl, apiKey)
 
         val service: ChatCompletionsService = try {
-            Retrofit.Builder()
-                .baseUrl(baseUrl)
-                .client(httpClient)
-                .addConverterFactory(MoshiConverterFactory.create(moshi))
-                .build()
-                .create(ChatCompletionsService::class.java)
+            serviceCache.getOrPut(baseUrl) {
+                Retrofit.Builder()
+                    .baseUrl(baseUrl)
+                    .client(httpClient)
+                    .addConverterFactory(MoshiConverterFactory.create(moshi))
+                    .build()
+                    .create(ChatCompletionsService::class.java)
+            }
         } catch (e: IllegalArgumentException) {
             throw ApiException(
                 "Invalid base URL for ${provider.displayName}. Please check the URL in Settings.",

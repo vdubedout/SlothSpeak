@@ -594,7 +594,8 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
                                 model = state.model,
                                 reasoningEffort = state.reasoningEffort,
                                 llmResponseSeconds = state.llmResponseSeconds,
-                                answerTextRich = state.answerTextRich
+                                answerTextRich = state.answerTextRich,
+                                reasoningText = state.reasoningText
                             )
                         }
                         _isViewingActivePipeline.value = false
@@ -755,7 +756,8 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         model: String? = null,
         reasoningEffort: String? = null,
         llmResponseSeconds: Int? = null,
-        answerTextRich: String? = null
+        answerTextRich: String? = null,
+        reasoningText: String? = null
     ) {
         val items = _sessionItems.value.toMutableList()
         // Find the target item to update:
@@ -779,7 +781,7 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
             reasoningEffort = reasoningEffort,
             llmResponseSeconds = llmResponseSeconds,
             answerTextRich = answerTextRich,
-            reasoningText = null
+            reasoningText = reasoningText
         )
 
         if (targetIndex >= 0) {
@@ -791,6 +793,7 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
                 reasoningEffort = reasoningEffort ?: existing.reasoningEffort,
                 llmResponseSeconds = llmResponseSeconds ?: existing.llmResponseSeconds,
                 answerTextRich = answerTextRich ?: existing.answerTextRich,
+                reasoningText = reasoningText ?: existing.reasoningText,
                 timestamp = existing.timestamp
             )
         } else {

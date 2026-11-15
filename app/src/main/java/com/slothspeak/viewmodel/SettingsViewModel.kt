@@ -227,6 +227,11 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         refreshState()
     }
 
+    fun deleteCompatProviderKey(id: String) {
+        compatibleProviderManager.deleteProviderKey(id)
+        refreshState()
+    }
+
     fun selectCompatProvider(id: String?) {
         if (id != null) {
             apiKeyManager.setSelectedCompatProviderId(id)
@@ -240,7 +245,8 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     fun setModel(model: String) {
         apiKeyManager.setSelectedModel(model)
-        _state.value = _state.value.copy(selectedModel = model)
+        apiKeyManager.setSelectedCompatProviderId(null)
+        _state.value = _state.value.copy(selectedModel = model, selectedCompatProviderId = null)
     }
 
     fun setReasoningEffort(effort: String) {
