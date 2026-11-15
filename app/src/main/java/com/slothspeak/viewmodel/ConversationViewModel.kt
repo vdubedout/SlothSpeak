@@ -390,6 +390,7 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
      */
     fun submitTextQuestion(question: String) {
         if (question.isBlank()) return
+        if (_isPipelineRunning.value) return // Close double-submit window before processing state lands
         if (!computeCanConverse()) return
 
         stopRecording() // Safety: stop any in-progress recording
