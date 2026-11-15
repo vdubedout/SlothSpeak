@@ -4,10 +4,8 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
-import com.squareup.moshi.JsonAdapter
-import com.squareup.moshi.Moshi
-import com.squareup.moshi.Types
-import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
+import org.json.JSONArray
+import org.json.JSONObject
 
 data class CompatibleProviderConfig(
     val id: String,
@@ -19,7 +17,29 @@ data class CompatibleProviderConfig(
     val sendThinkingParams: Boolean = true,
     val maxTokens: Int? = null
 ) {
+    fun toJson(): JSONObject = JSONObject().apply {
+        put("id", id)
+        put("displayName", displayName)
+        put("baseUrl", baseUrl)
+        put("modelId", modelId)
+        put("thinkingEnabled", thinkingEnabled)
+        put("reasoningEffort", reasoningEffort)
+        put("sendThinkingParams", sendThinkingParams)
+        put("maxTokens", maxTokens ?: JSONObject.NULL)
+    }
+
     companion object {
+        fun fromJson(json: JSONObject): CompatibleProviderConfig = CompatibleProviderConfig(
+            id = json.getString("id"),
+            displayName = json.getString("displayName"),
+            baseUrl = json.getString("baseUrl"),
+            modelId = json.getString("modelId"),
+            thinkingEnabled = json.optBoolean("thinkingEnabled", true),
+            reasoningEffort = json.optString("reasoningEffort", "high"),
+            sendThinkingParams = json.optBoolean("sendThinkingParams", true),
+            maxTokens = if (json.isNull("maxTokens")) null else json.optInt("maxTokens", -1).takeIf { it >= 0 }
+        )
+
         fun createZai(id: String): CompatibleProviderConfig = CompatibleProviderConfig(
             id = id,
             displayName = "Z.ai",
@@ -57,17 +77,6 @@ data class CompatibleProviderConfig(
 
 class CompatibleProviderManager(context: Context) {
 
-    private val moshi = Moshi.Builder()
-        .addLast(KotlinJsonAdapterFactory())
-        .build()
-
-    private val listType = Types.newParameterizedType(
-        MutableList::class.java,
-        CompatibleProviderConfig::class.java
-    )
-    private val listAdapter: JsonAdapter<List<CompatibleProviderConfig>> =
-        moshi.adapter(listType)
-
     private val configPrefs: SharedPreferences =
         context.getSharedPreferences(PREFS_CONFIG, Context.MODE_PRIVATE)
 
@@ -88,7 +97,10 @@ class CompatibleProviderManager(context: Context) {
     fun getProviders(): List<CompatibleProviderConfig> {
         val json = configPrefs.getString(KEY_PROVIDERS, null) ?: return emptyList()
         return try {
-            listAdapter.fromJson(json) ?: emptyList()
+            val arr = JSONArray(json)
+            (0 until arr.length()).map { i ->
+                CompatibleProviderConfig.fromJson(arr.getJSONObject(i))
+            }
         } catch (_: Exception) {
             emptyList()
         }
@@ -102,15 +114,19 @@ class CompatibleProviderManager(context: Context) {
         } else {
             providers.add(config)
         }
-        val json = listAdapter.toJson(providers)
-        configPrefs.edit().putString(KEY_PROVIDERS, json).apply()
+        val arr = JSONArray().apply {
+            providers.forEach { put(it.toJson()) }
+        }
+        configPrefs.edit().putString(KEY_PROVIDERS, arr.toString()).apply()
     }
 
     fun deleteProvider(id: String) {
         val providers = getProviders().toMutableList()
         providers.removeAll { it.id == id }
-        val json = listAdapter.toJson(providers)
-        configPrefs.edit().putString(KEY_PROVIDERS, json).apply()
+        val arr = JSONArray().apply {
+            providers.forEach { put(it.toJson()) }
+        }
+        configPrefs.edit().putString(KEY_PROVIDERS, arr.toString()).apply()
         deleteProviderKey(id)
     }
 

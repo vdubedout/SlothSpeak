@@ -69,6 +69,7 @@ import androidx.compose.ui.unit.dp
 import com.slothspeak.config.SystemPrompts
 import com.slothspeak.data.ApiKeyManager
 import com.slothspeak.data.CompatibleProviderConfig
+import com.slothspeak.data.CompatibleProviderManager
 import com.slothspeak.ui.theme.ErrorRed
 import com.slothspeak.ui.theme.AccentGreen
 import com.slothspeak.ui.theme.TextSecondary
@@ -96,6 +97,10 @@ fun SettingsScreen(
     var readingStyleExpanded by remember { mutableStateOf(false) }
     var showLicensesDialog by remember { mutableStateOf(false) }
     var showLicenseDialog by remember { mutableStateOf(false) }
+
+    // Compat provider manager (local instance for key checks in UI)
+    val context = LocalContext.current
+    val compatibleProviderManager = remember { CompatibleProviderManager(context) }
 
     // Compat provider state
     var showCompatAddDialog by remember { mutableStateOf(false) }
@@ -1762,23 +1767,6 @@ fun SettingsScreen(
         )
     }
 
-}
-
-@Composable
-private fun LicenseEntry(name: String, author: String, license: String) {
-    Column(modifier = Modifier.padding(bottom = 8.dp)) {
-        Text(
-            text = name,
-            style = MaterialTheme.typography.bodyMedium
-        )
-        Text(
-            text = "$author — $license",
-            style = MaterialTheme.typography.bodySmall,
-            color = TextSecondary
-        )
-    }
-}
-
     // Compat provider delete confirmation dialog
     val deletingCompatId = compatShowDeleteConfirm
     if (deletingCompatId != null) {
@@ -2089,6 +2077,21 @@ private fun LicenseEntry(name: String, author: String, license: String) {
                     Text("Cancel", color = ErrorRed)
                 }
             }
+        )
+    }
+}
+
+@Composable
+private fun LicenseEntry(name: String, author: String, license: String) {
+    Column(modifier = Modifier.padding(bottom = 8.dp)) {
+        Text(
+            text = name,
+            style = MaterialTheme.typography.bodyMedium
+        )
+        Text(
+            text = "$author — $license",
+            style = MaterialTheme.typography.bodySmall,
+            color = TextSecondary
         )
     }
 }
