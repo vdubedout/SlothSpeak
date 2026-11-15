@@ -541,7 +541,7 @@ fun TextInputQuestionBar(
 
     Column(modifier = modifier) {
         Text(
-            text = "Voice input needs an OpenAI API key — Settings",
+            text = "Voice input needs a speech-to-text provider — Settings",
             style = MaterialTheme.typography.bodySmall,
             color = TextSecondary
         )

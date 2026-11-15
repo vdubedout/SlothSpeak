@@ -57,7 +57,13 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         val followUpPrompt: String = SystemPrompts.FOLLOW_UP_PROMPT,
         // Compat providers
         val compatProviders: List<CompatibleProviderConfig> = emptyList(),
-        val selectedCompatProviderId: String? = null
+        val selectedCompatProviderId: String? = null,
+        // STT
+        val sttProvider: String = ApiKeyManager.STT_PROVIDER_OPENAI,
+        val hasSttApiKey: Boolean = false,
+        val sttKeySaved: Boolean = false,
+        val sttModel: String = ApiKeyManager.DEFAULT_STT_MODEL_OPENAI,
+        val sttBaseUrl: String = "https://api.openai.com/v1/"
     )
 
     init {
@@ -94,7 +100,11 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                 silenceTimeoutMs = apiKeyManager.getSilenceTimeoutMs(),
                 followUpPrompt = apiKeyManager.getFollowUpPrompt(),
                 compatProviders = compatibleProviderManager.getProviders(),
-                selectedCompatProviderId = apiKeyManager.getSelectedCompatProviderId()
+                selectedCompatProviderId = apiKeyManager.getSelectedCompatProviderId(),
+                sttProvider = apiKeyManager.getSttProvider(),
+                hasSttApiKey = apiKeyManager.hasSttApiKey(),
+                sttModel = apiKeyManager.getSttModel(),
+                sttBaseUrl = apiKeyManager.getSttBaseUrl()
             )
         }
     }
@@ -421,6 +431,36 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                 refreshState()
             }
         }
+    }
+
+    // ============================================================
+    // STT (Speech-to-Text) Provider
+    // ============================================================
+
+    fun saveSttApiKey(key: String) {
+        if (key.isBlank()) return
+        apiKeyManager.saveSttApiKey(key)
+        _state.value = _state.value.copy(hasSttApiKey = true, sttKeySaved = true)
+    }
+
+    fun deleteSttApiKey() {
+        apiKeyManager.deleteSttApiKey()
+        _state.value = _state.value.copy(hasSttApiKey = false, sttKeySaved = false)
+    }
+
+    fun setSttProvider(id: String) {
+        apiKeyManager.setSttProvider(id)
+        refreshState()
+    }
+
+    fun setSttModel(model: String) {
+        apiKeyManager.setSttModel(model)
+        _state.value = _state.value.copy(sttModel = model)
+    }
+
+    fun setSttBaseUrl(url: String) {
+        apiKeyManager.setSttBaseUrl(url)
+        _state.value = _state.value.copy(sttBaseUrl = url)
     }
 
     private fun calculateAudioStorageSize(): Long {

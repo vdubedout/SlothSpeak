@@ -31,6 +31,9 @@ class OpenAIClient(private val apiKeyManager: ApiKeyManager) {
 
     private val errorAdapter = moshi.adapter(ErrorResponse::class.java)
 
+    private val sttHttpClientCache = mutableMapOf<String, OkHttpClient>()
+    private val sttServiceCache = mutableMapOf<String, OpenAIService>()
+
     private val authInterceptor = Interceptor { chain ->
         val apiKey = apiKeyManager.getKey()
             ?: throw ApiException("No API key configured. Please set your OpenAI API key in Settings.")
@@ -39,13 +42,6 @@ class OpenAIClient(private val apiKeyManager: ApiKeyManager) {
             .build()
         chain.proceed(request)
     }
-
-    private val sttClient = OkHttpClient.Builder()
-        .addInterceptor(authInterceptor)
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(120, TimeUnit.SECONDS)
-        .writeTimeout(120, TimeUnit.SECONDS)
-        .build()
 
     private val llmClient = OkHttpClient.Builder()
         .addInterceptor(authInterceptor)
@@ -61,20 +57,49 @@ class OpenAIClient(private val apiKeyManager: ApiKeyManager) {
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
 
-    private fun buildService(client: OkHttpClient): OpenAIService {
+    private fun buildService(client: OkHttpClient, baseUrl: String = BASE_URL): OpenAIService {
         return Retrofit.Builder()
-            .baseUrl(BASE_URL)
+            .baseUrl(baseUrl)
             .client(client)
             .addConverterFactory(MoshiConverterFactory.create(moshi))
             .build()
             .create(OpenAIService::class.java)
     }
 
-    private val sttService = buildService(sttClient)
     private val llmService = buildService(llmClient)
     private val ttsService = buildService(ttsClient)
 
+    private fun getOrCreateSttClient(config: ApiKeyManager.SttConfig): OkHttpClient {
+        val cacheKey = "${config.baseUrl}_${config.apiKey ?: ""}"
+        return sttHttpClientCache.getOrPut(cacheKey) {
+            val interceptor = Interceptor { chain ->
+                val requestBuilder = chain.request().newBuilder()
+                if (!config.apiKey.isNullOrBlank()) {
+                    requestBuilder.addHeader("Authorization", "Bearer ${config.apiKey}")
+                }
+                chain.proceed(requestBuilder.build())
+            }
+
+            OkHttpClient.Builder()
+                .addInterceptor(interceptor)
+                .connectTimeout(30, TimeUnit.SECONDS)
+                .readTimeout(120, TimeUnit.SECONDS)
+                .writeTimeout(120, TimeUnit.SECONDS)
+                .build()
+        }
+    }
+
+    private fun getOrCreateSttService(config: ApiKeyManager.SttConfig): OpenAIService {
+        val cacheKey = "${config.baseUrl}_${config.apiKey ?: ""}"
+        return sttServiceCache.getOrPut(cacheKey) {
+            val client = getOrCreateSttClient(config)
+            buildService(client, config.baseUrl)
+        }
+    }
+
     suspend fun transcribeAudio(audioFile: File): String {
+        val sttConfig = apiKeyManager.getEffectiveSttConfig()
+
         val contentType = when {
             audioFile.name.endsWith(".wav", ignoreCase = true) -> "audio/wav"
             audioFile.name.endsWith(".m4a", ignoreCase = true) -> "audio/mp4"
@@ -82,10 +107,11 @@ class OpenAIClient(private val apiKeyManager: ApiKeyManager) {
         }
         val requestFile = audioFile.asRequestBody(contentType.toMediaType())
         val filePart = MultipartBody.Part.createFormData("file", audioFile.name, requestFile)
-        val modelBody = "gpt-4o-transcribe".toRequestBody("text/plain".toMediaType())
+        val modelBody = sttConfig.model.toRequestBody("text/plain".toMediaType())
         val formatBody = "json".toRequestBody("text/plain".toMediaType())
 
-        val response = sttService.transcribeAudio(filePart, modelBody, formatBody)
+        val service = getOrCreateSttService(sttConfig)
+        val response = service.transcribeAudio(filePart, modelBody, formatBody)
         if (response.isSuccessful) {
             val body = response.body() ?: throw ApiException("Empty transcription response")
             if (body.text.isBlank()) {
@@ -93,7 +119,8 @@ class OpenAIClient(private val apiKeyManager: ApiKeyManager) {
             }
             return body.text
         } else {
-            throw parseApiError(response.code(), response.errorBody()?.string())
+            val label = sttConfig.providerLabel
+            throw parseSttApiError(response.code(), response.errorBody()?.string(), label)
         }
     }
 
@@ -236,6 +263,37 @@ class OpenAIClient(private val apiKeyManager: ApiKeyManager) {
             )
             else -> ApiException(
                 detail ?: "API request failed (HTTP $code)",
+                code,
+                true
+            )
+        }
+    }
+
+    private fun parseSttApiError(code: Int, errorBody: String?, providerLabel: String): ApiException {
+        val detail = try {
+            errorBody?.let { errorAdapter.fromJson(it)?.error?.message }
+        } catch (_: Exception) {
+            null
+        }
+
+        return when (code) {
+            401 -> ApiException(
+                "Invalid $providerLabel API key. Please check your key in Settings.",
+                code,
+                true
+            )
+            429 -> ApiException(
+                detail ?: "Rate limited by $providerLabel. Please wait and try again.",
+                code,
+                true
+            )
+            in 500..599 -> ApiException(
+                detail ?: "$providerLabel server error. Please try again later.",
+                code,
+                true
+            )
+            else -> ApiException(
+                detail ?: "$providerLabel API request failed (HTTP $code)",
                 code,
                 true
             )
