@@ -67,12 +67,14 @@ interface ConversationDao {
 
     @Query("""UPDATE qa_pairs SET answerText = :answerText, audioFilePaths = :audioFilePaths,
         responseId = :responseId, model = :model, reasoningEffort = :reasoningEffort,
-        llmResponseSeconds = :llmResponseSeconds, answerTextRich = :answerTextRich
+        llmResponseSeconds = :llmResponseSeconds, answerTextRich = :answerTextRich,
+        reasoningText = :reasoningText
         WHERE id = :qaPairId""")
     suspend fun updateQAPairResult(
         qaPairId: Long, answerText: String, audioFilePaths: String?,
         responseId: String, model: String, reasoningEffort: String?,
-        llmResponseSeconds: Int?, answerTextRich: String?
+        llmResponseSeconds: Int?, answerTextRich: String?,
+        reasoningText: String? = null
     )
 
     @Query("SELECT COUNT(*) FROM qa_pairs WHERE conversationId = :conversationId")

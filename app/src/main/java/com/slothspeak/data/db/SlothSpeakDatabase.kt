@@ -11,7 +11,7 @@ import com.slothspeak.data.db.entities.QAPair
 
 @Database(
     entities = [Conversation::class, QAPair::class],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class SlothSpeakDatabase : RoomDatabase() {
@@ -41,6 +41,12 @@ abstract class SlothSpeakDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE qa_pairs ADD COLUMN reasoningText TEXT DEFAULT NULL")
+            }
+        }
+
         fun getInstance(context: Context): SlothSpeakDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -48,7 +54,7 @@ abstract class SlothSpeakDatabase : RoomDatabase() {
                     SlothSpeakDatabase::class.java,
                     "slothspeak_db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                     .fallbackToDestructiveMigration()
                     .build()
                     .also { INSTANCE = it }

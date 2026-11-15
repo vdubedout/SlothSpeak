@@ -349,7 +349,8 @@ fun MainScreen(
                                 model = item.model,
                                 reasoningEffort = item.reasoningEffort,
                                 llmResponseSeconds = item.llmResponseSeconds,
-                                answerTextRich = item.answerTextRich
+                                answerTextRich = item.answerTextRich,
+                                reasoningText = item.reasoningText
                             )
                         }
 

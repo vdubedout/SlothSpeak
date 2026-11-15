@@ -17,6 +17,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.PlayArrow
@@ -66,6 +68,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.slothspeak.config.SystemPrompts
 import com.slothspeak.data.ApiKeyManager
+import com.slothspeak.data.CompatibleProviderConfig
 import com.slothspeak.ui.theme.ErrorRed
 import com.slothspeak.ui.theme.AccentGreen
 import com.slothspeak.ui.theme.TextSecondary
@@ -93,6 +96,20 @@ fun SettingsScreen(
     var readingStyleExpanded by remember { mutableStateOf(false) }
     var showLicensesDialog by remember { mutableStateOf(false) }
     var showLicenseDialog by remember { mutableStateOf(false) }
+
+    // Compat provider state
+    var showCompatAddDialog by remember { mutableStateOf(false) }
+    var editingCompatProvider by remember { mutableStateOf<CompatibleProviderConfig?>(null) }
+    var compatEditDisplayName by remember { mutableStateOf("") }
+    var compatEditBaseUrl by remember { mutableStateOf("") }
+    var compatEditModelId by remember { mutableStateOf("") }
+    var compatEditKey by remember { mutableStateOf("") }
+    var compatEditThinkingEnabled by remember { mutableStateOf(true) }
+    var compatEditReasoningEffort by remember { mutableStateOf("high") }
+    var compatEditSendThinkingParams by remember { mutableStateOf(true) }
+    var compatEditMaxTokens by remember { mutableStateOf("") }
+    var compatSelectedTemplate by remember { mutableStateOf<String?>(null) }
+    var compatShowDeleteConfirm by remember { mutableStateOf<String?>(null) }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -533,6 +550,84 @@ fun SettingsScreen(
 
             Spacer(modifier = Modifier.height(24.dp))
 
+            // OpenAI-Compatible Providers Section
+            SectionHeader("OpenAI-Compatible Providers")
+
+            Text(
+                text = "Connect to Z.ai, DeepSeek, self-hosted Qwen, or any OpenAI-compatible API.",
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary,
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
+
+            // Add Provider Button
+            Button(
+                onClick = { showCompatAddDialog = true },
+                colors = ButtonDefaults.buttonColors(containerColor = AccentGreen),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Add Provider")
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Provider list
+            state.compatProviders.forEach { provider ->
+                val isCustom = provider.id.startsWith("custom-")
+
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surface
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 8.dp)
+                        .clickable {
+                            editingCompatProvider = provider
+                            compatEditDisplayName = provider.displayName
+                            compatEditBaseUrl = provider.baseUrl
+                            compatEditModelId = provider.modelId
+                            compatEditKey = compatibleProviderManager.getProviderKey(provider.id) ?: ""
+                            compatEditThinkingEnabled = provider.thinkingEnabled
+                            compatEditReasoningEffort = provider.reasoningEffort
+                            compatEditSendThinkingParams = provider.sendThinkingParams
+                            compatEditMaxTokens = provider.maxTokens?.toString() ?: ""
+                            compatSelectedTemplate = null
+                        }
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = provider.displayName,
+                                    style = MaterialTheme.typography.bodyLarge
+                                )
+                                Text(
+                                    text = "${provider.modelId} · ${provider.baseUrl}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = TextSecondary
+                                )
+                            }
+                            IconButton(
+                                onClick = { compatShowDeleteConfirm = provider.id },
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Delete,
+                                    contentDescription = "Delete",
+                                    tint = ErrorRed,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
             // Model Selection
             SectionHeader("Model")
 
@@ -624,6 +719,73 @@ fun SettingsScreen(
                         selected = state.selectedModel == ApiKeyManager.MODEL_GROK,
                         onClick = { viewModel.setModel(ApiKeyManager.MODEL_GROK) }
                     )
+
+                    // OpenAI-Compatible Providers
+                    if (state.compatProviders.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(16.dp))
+                        ProviderHeader("OpenAI-Compatible")
+
+                        state.compatProviders.forEach { provider ->
+                            Spacer(modifier = Modifier.height(8.dp))
+                            ModelOption(
+                                title = "${provider.modelId} — ${provider.displayName}",
+                                description = "OpenAI-compatible · ${provider.baseUrl}",
+                                selected = state.selectedCompatProviderId == provider.id,
+                                onClick = { viewModel.selectCompatProvider(provider.id) }
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Reasoning Effort for selected compat provider
+            val selectedCompatProvider = state.compatProviders.firstOrNull { it.id == state.selectedCompatProviderId }
+            if (selectedCompatProvider != null && selectedCompatProvider.thinkingEnabled) {
+                Spacer(modifier = Modifier.height(24.dp))
+
+                SectionHeader("Reasoning Effort (${selectedCompatProvider.displayName})")
+
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surface
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        ModelOption(
+                            title = "Low",
+                            description = "Fastest responses, minimal reasoning",
+                            selected = selectedCompatProvider.reasoningEffort == "low",
+                            onClick = {
+                                val updated = selectedCompatProvider.copy(reasoningEffort = "low")
+                                viewModel.saveCompatProvider(updated)
+                            }
+                        )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        ModelOption(
+                            title = "High",
+                            description = "Deep reasoning, default setting",
+                            selected = selectedCompatProvider.reasoningEffort == "high",
+                            onClick = {
+                                val updated = selectedCompatProvider.copy(reasoningEffort = "high")
+                                viewModel.saveCompatProvider(updated)
+                            }
+                        )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        ModelOption(
+                            title = "Max",
+                            description = "Maximum reasoning depth, may be slow",
+                            selected = selectedCompatProvider.reasoningEffort == "max",
+                            onClick = {
+                                val updated = selectedCompatProvider.copy(reasoningEffort = "max")
+                                viewModel.saveCompatProvider(updated)
+                            }
+                        )
+                    }
                 }
             }
 
@@ -1613,6 +1775,320 @@ private fun LicenseEntry(name: String, author: String, license: String) {
             text = "$author — $license",
             style = MaterialTheme.typography.bodySmall,
             color = TextSecondary
+        )
+    }
+}
+
+    // Compat provider delete confirmation dialog
+    val deletingCompatId = compatShowDeleteConfirm
+    if (deletingCompatId != null) {
+        val providerName = state.compatProviders.firstOrNull { it.id == deletingCompatId }?.displayName ?: "this provider"
+        AlertDialog(
+            onDismissRequest = { compatShowDeleteConfirm = null },
+            title = { Text("Delete $providerName?") },
+            text = { Text("This will remove the provider and its API key from the app.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.deleteCompatProvider(deletingCompatId)
+                        compatShowDeleteConfirm = null
+                    }
+                ) {
+                    Text("Delete", color = ErrorRed)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { compatShowDeleteConfirm = null }) {
+                    Text("Cancel", color = AccentGreen)
+                }
+            }
+        )
+    }
+
+    // Compat provider add/edit dialog
+    if (showCompatAddDialog || editingCompatProvider != null) {
+        val isEditing = editingCompatProvider != null
+        val dialogTitle = if (isEditing) "Edit ${editingCompatProvider?.displayName ?: "Provider"}" else "Add Provider"
+
+        AlertDialog(
+            onDismissRequest = {
+                showCompatAddDialog = false
+                editingCompatProvider = null
+            },
+            title = { Text(dialogTitle) },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    if (!isEditing) {
+                        // Template chooser for new providers
+                        Text(
+                            text = "Select a template or configure manually:",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = {
+                                    val provider = CompatibleProviderConfig.createZai("zai-${System.currentTimeMillis()}")
+                                    editingCompatProvider = provider
+                                    compatEditDisplayName = provider.displayName
+                                    compatEditBaseUrl = provider.baseUrl
+                                    compatEditModelId = provider.modelId
+                                    compatEditKey = ""
+                                    compatEditThinkingEnabled = provider.thinkingEnabled
+                                    compatEditReasoningEffort = provider.reasoningEffort
+                                    compatEditSendThinkingParams = provider.sendThinkingParams
+                                    compatEditMaxTokens = provider.maxTokens?.toString() ?: ""
+                                    compatSelectedTemplate = "zai"
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = AccentGreen),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Z.ai", maxLines = 1)
+                            }
+                            Button(
+                                onClick = {
+                                    val provider = CompatibleProviderConfig.createDeepSeek("deepseek-${System.currentTimeMillis()}")
+                                    editingCompatProvider = provider
+                                    compatEditDisplayName = provider.displayName
+                                    compatEditBaseUrl = provider.baseUrl
+                                    compatEditModelId = provider.modelId
+                                    compatEditKey = ""
+                                    compatEditThinkingEnabled = provider.thinkingEnabled
+                                    compatEditReasoningEffort = provider.reasoningEffort
+                                    compatEditSendThinkingParams = provider.sendThinkingParams
+                                    compatEditMaxTokens = provider.maxTokens?.toString() ?: ""
+                                    compatSelectedTemplate = "deepseek"
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = AccentGreen),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("DeepSeek", maxLines = 1)
+                            }
+                            Button(
+                                onClick = {
+                                    val provider = CompatibleProviderConfig.createCustom("custom-${System.currentTimeMillis()}")
+                                    editingCompatProvider = provider
+                                    compatEditDisplayName = provider.displayName
+                                    compatEditBaseUrl = provider.baseUrl
+                                    compatEditModelId = provider.modelId
+                                    compatEditKey = ""
+                                    compatEditThinkingEnabled = provider.thinkingEnabled
+                                    compatEditReasoningEffort = provider.reasoningEffort
+                                    compatEditSendThinkingParams = provider.sendThinkingParams
+                                    compatEditMaxTokens = provider.maxTokens?.toString() ?: ""
+                                    compatSelectedTemplate = "custom"
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = AccentGreen),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Custom", maxLines = 1)
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(16.dp))
+                    }
+
+                    // Edit form (shown after template selected or when editing existing)
+                    if (editingCompatProvider != null) {
+                        OutlinedTextField(
+                            value = compatEditDisplayName,
+                            onValueChange = { compatEditDisplayName = it },
+                            label = { Text("Display Name") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = AccentGreen,
+                                cursorColor = AccentGreen,
+                                focusedLabelColor = AccentGreen
+                            )
+                        )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        OutlinedTextField(
+                            value = compatEditBaseUrl,
+                            onValueChange = { compatEditBaseUrl = it },
+                            label = { Text("Base URL") },
+                            placeholder = { Text("…include /v1/") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = AccentGreen,
+                                cursorColor = AccentGreen,
+                                focusedLabelColor = AccentGreen
+                            )
+                        )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        OutlinedTextField(
+                            value = compatEditModelId,
+                            onValueChange = { compatEditModelId = it },
+                            label = { Text("Model ID") },
+                            placeholder = { if (compatSelectedTemplate == "custom") Text("e.g. qwen3.8-27b") else Text("Select from template") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = AccentGreen,
+                                cursorColor = AccentGreen,
+                                focusedLabelColor = AccentGreen
+                            )
+                        )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        OutlinedTextField(
+                            value = compatEditKey,
+                            onValueChange = { compatEditKey = it },
+                            label = { Text(if (compatSelectedTemplate == "custom") "API Key (optional)" else "API Key") },
+                            placeholder = { if (compatSelectedTemplate == "custom") Text("Leave blank for self-hosted") else Text("sk-…") },
+                            visualTransformation = PasswordVisualTransformation(),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = AccentGreen,
+                                cursorColor = AccentGreen,
+                                focusedLabelColor = AccentGreen
+                            )
+                        )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        // Thinking toggle
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Enable thinking", style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    "Send reasoning_content parameters",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = TextSecondary
+                                )
+                            }
+                            Switch(
+                                checked = compatEditThinkingEnabled,
+                                onCheckedChange = { compatEditThinkingEnabled = it },
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = AccentGreen,
+                                    checkedTrackColor = AccentGreen.copy(alpha = 0.5f)
+                                )
+                            )
+                        }
+
+                        // Reasoning effort (only when thinking enabled)
+                        if (compatEditThinkingEnabled) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text("Reasoning Effort", style = MaterialTheme.typography.bodyMedium)
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                listOf("low", "high", "max").forEach { effort ->
+                                    Button(
+                                        onClick = { compatEditReasoningEffort = effort },
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = if (compatEditReasoningEffort == effort) AccentGreen
+                                                else AccentGreen.copy(alpha = 0.3f)
+                                        ),
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Text(effort.replaceFirstChar { it.uppercase() }, maxLines = 1)
+                                    }
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        // Send thinking parameters toggle (visible always)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    "Send thinking parameters",
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                                Text(
+                                    if (compatEditSendThinkingParams) "ON for Z.ai/DeepSeek" else "OFF for Custom (vLLM)",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = TextSecondary
+                                )
+                            }
+                            Switch(
+                                checked = compatEditSendThinkingParams,
+                                onCheckedChange = { compatEditSendThinkingParams = it },
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = AccentGreen,
+                                    checkedTrackColor = AccentGreen.copy(alpha = 0.5f)
+                                )
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        // Max tokens
+                        OutlinedTextField(
+                            value = compatEditMaxTokens,
+                            onValueChange = { compatEditMaxTokens = it.filter { c -> c.isDigit() } },
+                            label = { Text("Max Tokens (optional)") },
+                            placeholder = { Text("Blank = provider default") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = AccentGreen,
+                                cursorColor = AccentGreen,
+                                focusedLabelColor = AccentGreen
+                            )
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val provider = editingCompatProvider ?: return@TextButton
+                        val updated = provider.copy(
+                            displayName = compatEditDisplayName.ifBlank { provider.displayName },
+                            baseUrl = compatEditBaseUrl.ifBlank { provider.baseUrl },
+                            modelId = compatEditModelId.ifBlank { provider.modelId },
+                            thinkingEnabled = compatEditThinkingEnabled,
+                            reasoningEffort = compatEditReasoningEffort,
+                            sendThinkingParams = compatEditSendThinkingParams,
+                            maxTokens = compatEditMaxTokens.toIntOrNull()
+                        )
+                        viewModel.saveCompatProvider(updated)
+                        if (compatEditKey.isNotBlank()) {
+                            viewModel.saveCompatProviderKey(updated.id, compatEditKey)
+                        }
+                        showCompatAddDialog = false
+                        editingCompatProvider = null
+                    },
+                    enabled = editingCompatProvider != null &&
+                            compatEditBaseUrl.isNotBlank() &&
+                            compatEditModelId.isNotBlank()
+                ) {
+                    Text("Save", color = AccentGreen)
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showCompatAddDialog = false
+                        editingCompatProvider = null
+                    }
+                ) {
+                    Text("Cancel", color = ErrorRed)
+                }
+            }
         )
     }
 }
