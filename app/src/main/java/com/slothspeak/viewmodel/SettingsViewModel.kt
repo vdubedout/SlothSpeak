@@ -63,7 +63,14 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         val hasSttApiKey: Boolean = false,
         val sttKeySaved: Boolean = false,
         val sttModel: String = ApiKeyManager.DEFAULT_STT_MODEL_OPENAI,
-        val sttBaseUrl: String = "https://api.openai.com/v1/"
+        val sttBaseUrl: String = "https://api.openai.com/v1/",
+        // TTS
+        val ttsProvider: String = ApiKeyManager.TTS_PROVIDER_OPENAI,
+        val ttsModel: String = ApiKeyManager.DEFAULT_TTS_MODEL_OPENAI,
+        val ttsVoice: String = ApiKeyManager.DEFAULT_TTS_VOICE_OPENAI,
+        val ttsBaseUrl: String = "https://api.openai.com/v1/",
+        val hasTtsCustomApiKey: Boolean = false,
+        val ttsKeySaved: Boolean = false
     )
 
     init {
@@ -104,7 +111,13 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                 sttProvider = apiKeyManager.getSttProvider(),
                 hasSttApiKey = apiKeyManager.hasSttApiKey(),
                 sttModel = apiKeyManager.getSttModel(),
-                sttBaseUrl = apiKeyManager.getSttBaseUrl()
+                sttBaseUrl = apiKeyManager.getSttBaseUrl(),
+                ttsProvider = apiKeyManager.getTtsProvider(),
+                ttsModel = apiKeyManager.getTtsModel(),
+                ttsVoice = apiKeyManager.getTtsVoice(),
+                ttsBaseUrl = apiKeyManager.getTtsBaseUrl(),
+                hasTtsCustomApiKey = apiKeyManager.getTtsCustomApiKey() != null,
+                ttsKeySaved = false
             )
         }
     }
@@ -461,6 +474,41 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     fun setSttBaseUrl(url: String) {
         apiKeyManager.setSttBaseUrl(url)
         _state.value = _state.value.copy(sttBaseUrl = url)
+    }
+
+    // ============================================================
+    // TTS (Text-to-Speech) Provider
+    // ============================================================
+
+    fun setTtsProvider(id: String) {
+        apiKeyManager.setTtsProvider(id)
+        refreshState()
+    }
+
+    fun setTtsModel(model: String) {
+        apiKeyManager.setTtsModel(model)
+        _state.value = _state.value.copy(ttsModel = model)
+    }
+
+    fun setTtsVoice(voice: String) {
+        apiKeyManager.setTtsVoice(voice)
+        _state.value = _state.value.copy(ttsVoice = voice)
+    }
+
+    fun setTtsBaseUrl(url: String) {
+        apiKeyManager.setTtsBaseUrl(url)
+        _state.value = _state.value.copy(ttsBaseUrl = url)
+    }
+
+    fun saveTtsCustomApiKey(key: String) {
+        if (key.isBlank()) return
+        apiKeyManager.saveTtsCustomApiKey(key)
+        _state.value = _state.value.copy(hasTtsCustomApiKey = true, ttsKeySaved = true)
+    }
+
+    fun deleteTtsCustomApiKey() {
+        apiKeyManager.deleteTtsCustomApiKey()
+        _state.value = _state.value.copy(hasTtsCustomApiKey = false, ttsKeySaved = false)
     }
 
     private fun calculateAudioStorageSize(): Long {

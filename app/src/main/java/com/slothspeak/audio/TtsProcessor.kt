@@ -1,7 +1,6 @@
 package com.slothspeak.audio
 
 import android.util.Log
-import com.slothspeak.api.OpenAIClient
 import com.slothspeak.util.TextChunker
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -15,10 +14,9 @@ import kotlinx.coroutines.sync.withPermit
 import java.io.File
 
 class TtsProcessor(
-    private val client: OpenAIClient,
+    private val synthesizer: TtsSynthesizer,
     private val audioDir: File,
-    private val voice: String = "marin",
-    private val ttsInstructions: String
+    private val instructions: String? = null  // only used by openai provider
 ) {
 
     private val _progress = MutableStateFlow(TtsProgress())
@@ -131,7 +129,7 @@ class TtsProcessor(
                     delay(backoffMs)
                 }
 
-                client.createSpeech(text, outputFile, voice, ttsInstructions)
+                synthesizer.synthesize(text, outputFile, instructions)
 
                 val fileSize = outputFile.length() / 1024
                 Log.i(TAG, "TTS $chunkLabel done: ${fileSize}KB (depth=$depth)")

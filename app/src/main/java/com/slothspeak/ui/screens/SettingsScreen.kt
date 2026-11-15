@@ -305,6 +305,33 @@ fun SettingsScreen(
 
                     Spacer(modifier = Modifier.height(24.dp))
 
+                    // Text-to-Speech Section
+                    SectionHeader("Text-to-Speech")
+
+                    Text(
+                        text = "Choose which provider handles voice synthesis.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+
+                    TtsSection(
+                        ttsProvider = state.ttsProvider,
+                        ttsModel = state.ttsModel,
+                        ttsVoice = state.ttsVoice,
+                        ttsBaseUrl = state.ttsBaseUrl,
+                        hasTtsCustomApiKey = state.hasTtsCustomApiKey,
+                        ttsKeySaved = state.ttsKeySaved,
+                        onSetProvider = { viewModel.setTtsProvider(it) },
+                        onSetModel = { viewModel.setTtsModel(it) },
+                        onSetVoice = { viewModel.setTtsVoice(it) },
+                        onSetBaseUrl = { viewModel.setTtsBaseUrl(it) },
+                        onSaveCustomApiKey = { viewModel.saveTtsCustomApiKey(it) },
+                        onDeleteCustomApiKey = { viewModel.deleteTtsCustomApiKey() }
+                    )
+
+                    Spacer(modifier = Modifier.height(24.dp))
+
                     // Gemini API Key Section
                     SectionHeader("Gemini API Key")
 
@@ -1014,17 +1041,18 @@ fun SettingsScreen(
 
             Spacer(modifier = Modifier.height(24.dp))
 
-            // Voice Selection
-            SectionHeader("Voice")
+            // Voice Selection — only for OpenAI TTS provider
+            if (state.ttsProvider == ApiKeyManager.TTS_PROVIDER_OPENAI) {
+                SectionHeader("Voice")
 
-            VoiceSelector(
-                selectedVoice = state.selectedVoice,
-                onVoiceSelected = { viewModel.setSelectedVoice(it) }
-            )
+                VoiceSelector(
+                    selectedVoice = state.selectedVoice,
+                    onVoiceSelected = { viewModel.setSelectedVoice(it) }
+                )
 
-            Spacer(modifier = Modifier.height(24.dp))
+                Spacer(modifier = Modifier.height(24.dp))
 
-            // TTS Reading Instructions (collapsible)
+                // TTS Reading Instructions (collapsible) — OpenAI only
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -1101,6 +1129,7 @@ fun SettingsScreen(
                     }
                 }
             }
+        }
 
             Spacer(modifier = Modifier.height(24.dp))
 
@@ -2756,6 +2785,436 @@ fun SttSection(
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+// ============================================================
+// TTS (Text-to-Speech) Provider Section
+// ============================================================
+
+@Composable
+fun TtsSection(
+    ttsProvider: String,
+    ttsModel: String,
+    ttsVoice: String,
+    ttsBaseUrl: String,
+    hasTtsCustomApiKey: Boolean,
+    ttsKeySaved: Boolean,
+    onSetProvider: (String) -> Unit,
+    onSetModel: (String) -> Unit,
+    onSetVoice: (String) -> Unit,
+    onSetBaseUrl: (String) -> Unit,
+    onSaveCustomApiKey: (String) -> Unit,
+    onDeleteCustomApiKey: () -> Unit
+) {
+    var ttsCustomKeyInput by remember { mutableStateOf("") }
+    var showTtsCustomKey by remember { mutableStateOf(false) }
+
+    // Provider selection radio buttons
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        ),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = "Provider",
+                style = MaterialTheme.typography.bodyMedium,
+                color = TextSecondary
+            )
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            // OpenAI
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                RadioButton(
+                    selected = ttsProvider == ApiKeyManager.TTS_PROVIDER_OPENAI,
+                    onClick = { onSetProvider(ApiKeyManager.TTS_PROVIDER_OPENAI) },
+                    colors = RadioButtonDefaults.colors(
+                        selectedColor = AccentGreen,
+                        unselectedColor = TextSecondary
+                    )
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Column {
+                    Text(
+                        text = "OpenAI (gpt-4o-mini-tts)",
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                    Text(
+                        text = "Uses your OpenAI API key above",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Together
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                RadioButton(
+                    selected = ttsProvider == ApiKeyManager.TTS_PROVIDER_TOGETHER,
+                    onClick = { onSetProvider(ApiKeyManager.TTS_PROVIDER_TOGETHER) },
+                    colors = RadioButtonDefaults.colors(
+                        selectedColor = AccentGreen,
+                        unselectedColor = TextSecondary
+                    )
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Column {
+                    Text(
+                        text = "Together (Orpheus)",
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                    Text(
+                        text = "Uses your Together key from Speech-to-Text",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Custom
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                RadioButton(
+                    selected = ttsProvider == ApiKeyManager.TTS_PROVIDER_CUSTOM,
+                    onClick = { onSetProvider(ApiKeyManager.TTS_PROVIDER_CUSTOM) },
+                    colors = RadioButtonDefaults.colors(
+                        selectedColor = AccentGreen,
+                        unselectedColor = TextSecondary
+                    )
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Column {
+                    Text(
+                        text = "Custom (OpenAI-compatible)",
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                    Text(
+                        text = "Self-hosted or any OpenAI-compatible TTS endpoint",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // On-device
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                RadioButton(
+                    selected = ttsProvider == ApiKeyManager.TTS_PROVIDER_ONDEVICE,
+                    onClick = { onSetProvider(ApiKeyManager.TTS_PROVIDER_ONDEVICE) },
+                    colors = RadioButtonDefaults.colors(
+                        selectedColor = AccentGreen,
+                        unselectedColor = TextSecondary
+                    )
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Column {
+                    Text(
+                        text = "On-device (Android system TTS)",
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                    Text(
+                        text = "Free, offline, uses your device's system text-to-speech engine",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
+                }
+            }
+        }
+    }
+
+    Spacer(modifier = Modifier.height(12.dp))
+
+    // Provider-specific configuration card
+    when (ttsProvider) {
+        ApiKeyManager.TTS_PROVIDER_OPENAI -> {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surface
+                ),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "Uses your OpenAI API key configured above.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TextSecondary
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "Model: gpt-4o-mini-tts",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Voice is chosen with the OpenAI voice picker below.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
+                }
+            }
+        }
+
+        ApiKeyManager.TTS_PROVIDER_TOGETHER -> {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surface
+                ),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "Uses your Together.ai API key from Speech-to-Text.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TextSecondary
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Model field
+                    Text(
+                        text = "Model",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TextSecondary
+                    )
+
+                    OutlinedTextField(
+                        value = ttsModel,
+                        onValueChange = { onSetModel(it) },
+                        label = { Text("Model ID") },
+                        placeholder = { Text(ApiKeyManager.DEFAULT_TTS_MODEL_TOGETHER) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = AccentGreen,
+                            cursorColor = AccentGreen,
+                            focusedLabelColor = AccentGreen
+                        )
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Voice field
+                    Text(
+                        text = "Voice",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TextSecondary
+                    )
+
+                    OutlinedTextField(
+                        value = ttsVoice,
+                        onValueChange = { onSetVoice(it) },
+                        label = { Text("Voice ID") },
+                        placeholder = { Text(ApiKeyManager.DEFAULT_TTS_VOICE_TOGETHER) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = AccentGreen,
+                            cursorColor = AccentGreen,
+                            focusedLabelColor = AccentGreen
+                        )
+                    )
+                }
+            }
+        }
+
+        ApiKeyManager.TTS_PROVIDER_CUSTOM -> {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surface
+                ),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    // Base URL
+                    Text(
+                        text = "Base URL",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TextSecondary
+                    )
+
+                    OutlinedTextField(
+                        value = ttsBaseUrl,
+                        onValueChange = { onSetBaseUrl(it) },
+                        label = { Text("Base URL (include /v1/)") },
+                        placeholder = { Text("http://192.168.1.100:8000/v1/") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = AccentGreen,
+                            cursorColor = AccentGreen,
+                            focusedLabelColor = AccentGreen
+                        )
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Model
+                    Text(
+                        text = "Model",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TextSecondary
+                    )
+
+                    OutlinedTextField(
+                        value = ttsModel,
+                        onValueChange = { onSetModel(it) },
+                        label = { Text("Model ID") },
+                        placeholder = { Text("tts-model-id") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = AccentGreen,
+                            cursorColor = AccentGreen,
+                            focusedLabelColor = AccentGreen
+                        )
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Voice
+                    Text(
+                        text = "Voice",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TextSecondary
+                    )
+
+                    OutlinedTextField(
+                        value = ttsVoice,
+                        onValueChange = { onSetVoice(it) },
+                        label = { Text("Voice ID (optional)") },
+                        placeholder = { Text("Voice name") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = AccentGreen,
+                            cursorColor = AccentGreen,
+                            focusedLabelColor = AccentGreen
+                        )
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // API key (optional)
+                    Text(
+                        text = if (hasTtsCustomApiKey) "API key is saved (optional)" else "API key (optional)",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (hasTtsCustomApiKey) AccentGreen else TextSecondary
+                    )
+
+                    if (ttsKeySaved) {
+                        Text(
+                            text = "Key saved successfully!",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = AccentGreen
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    OutlinedTextField(
+                        value = ttsCustomKeyInput,
+                        onValueChange = { ttsCustomKeyInput = it },
+                        label = { Text("API Key (leave blank for no auth)") },
+                        placeholder = { Text("Optional API key") },
+                        visualTransformation = if (showTtsCustomKey) {
+                            VisualTransformation.None
+                        } else {
+                            PasswordVisualTransformation()
+                        },
+                        trailingIcon = {
+                            IconButton(onClick = { showTtsCustomKey = !showTtsCustomKey }) {
+                                Icon(
+                                    imageVector = if (showTtsCustomKey) Icons.Default.VisibilityOff
+                                        else Icons.Default.Visibility,
+                                    contentDescription = if (showTtsCustomKey) "Hide" else "Show",
+                                    tint = TextSecondary
+                                )
+                            }
+                        },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = AccentGreen,
+                            cursorColor = AccentGreen,
+                            focusedLabelColor = AccentGreen
+                        )
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Row {
+                        Button(
+                            onClick = {
+                                onSaveCustomApiKey(ttsCustomKeyInput)
+                                ttsCustomKeyInput = ""
+                            },
+                            enabled = ttsCustomKeyInput.isNotBlank(),
+                            colors = ButtonDefaults.buttonColors(containerColor = AccentGreen)
+                        ) {
+                            Text("Save")
+                        }
+
+                        if (hasTtsCustomApiKey) {
+                            Spacer(modifier = Modifier.width(8.dp))
+                            OutlinedButton(
+                                onClick = { onDeleteCustomApiKey() },
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    contentColor = ErrorRed
+                                )
+                            ) {
+                                Text("Delete Key")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        ApiKeyManager.TTS_PROVIDER_ONDEVICE -> {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surface
+                ),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "Uses your device's system text-to-speech engine.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TextSecondary
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "Free and offline. No API key required. " +
+                                "Voice and model settings are managed by the system.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
                 }
             }
         }

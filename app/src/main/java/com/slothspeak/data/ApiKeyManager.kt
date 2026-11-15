@@ -295,6 +295,96 @@ class ApiKeyManager(context: Context) {
         val providerLabel: String
     )
 
+    // ============================================================
+    // TTS (Text-to-Speech) Provider Config
+    // ============================================================
+
+    fun getTtsProvider(): String {
+        return prefs.getString(KEY_TTS_PROVIDER, TTS_PROVIDER_OPENAI) ?: TTS_PROVIDER_OPENAI
+    }
+
+    fun setTtsProvider(id: String) {
+        prefs.edit().putString(KEY_TTS_PROVIDER, id).apply()
+    }
+
+    fun getTtsModel(): String {
+        val provider = getTtsProvider()
+        val modelKey = ttsModelKey(provider)
+        val defaultModel = defaultTtsModel(provider)
+        return prefs.getString(modelKey, defaultModel)?.takeIf { it.isNotBlank() } ?: defaultModel
+    }
+
+    fun setTtsModel(model: String) {
+        val provider = getTtsProvider()
+        prefs.edit().putString(ttsModelKey(provider), model).apply()
+    }
+
+    fun getTtsVoice(): String {
+        val provider = getTtsProvider()
+        val voiceKey = ttsVoiceKey(provider)
+        val defaultVoice = defaultTtsVoice(provider)
+        return prefs.getString(voiceKey, defaultVoice)?.takeIf { it.isNotBlank() } ?: defaultVoice
+    }
+
+    fun setTtsVoice(voice: String) {
+        val provider = getTtsProvider()
+        prefs.edit().putString(ttsVoiceKey(provider), voice).apply()
+    }
+
+    fun getTtsCustomApiKey(): String? {
+        return prefs.getString(KEY_TTS_CUSTOM_API_KEY, null)?.takeIf { it.isNotBlank() }
+    }
+
+    fun saveTtsCustomApiKey(key: String) {
+        prefs.edit().putString(KEY_TTS_CUSTOM_API_KEY, key.trim()).apply()
+    }
+
+    fun deleteTtsCustomApiKey() {
+        prefs.edit().remove(KEY_TTS_CUSTOM_API_KEY).apply()
+    }
+
+    fun getTtsBaseUrl(): String {
+        val provider = getTtsProvider()
+        val defaultUrl = defaultTtsBaseUrl(provider)
+        return prefs.getString(KEY_TTS_BASE_URL, null)?.takeIf { it.isNotBlank() } ?: defaultUrl
+    }
+
+    fun setTtsBaseUrl(url: String) {
+        val normalized = if (url.endsWith("/")) url else "$url/"
+        prefs.edit().putString(KEY_TTS_BASE_URL, normalized).apply()
+    }
+
+    fun isTtsConfigured(): Boolean {
+        return when (getTtsProvider()) {
+            TTS_PROVIDER_OPENAI -> hasKey()
+            TTS_PROVIDER_TOGETHER -> hasSttApiKey() // reuses Together STT key
+            TTS_PROVIDER_CUSTOM -> getTtsBaseUrl().isNotBlank() && getTtsModel().isNotBlank()
+            TTS_PROVIDER_ONDEVICE -> true
+            else -> hasKey()
+        }
+    }
+
+    fun getEffectiveTtsConfig(): TtsConfig {
+        return resolveTtsConfig(
+            providerId = getTtsProvider(),
+            openaiApiKey = getKey(),
+            togetherApiKey = getSttApiKey(),  // reuses Together STT key
+            customApiKey = getTtsCustomApiKey(),
+            ttsModel = getTtsModel(),
+            ttsVoice = getTtsVoice(),
+            ttsBaseUrl = getTtsBaseUrl(),
+            selectedVoice = getSelectedVoice()
+        )
+    }
+
+    data class TtsConfig(
+        val provider: String,
+        val baseUrl: String?,
+        val apiKey: String?,
+        val model: String,
+        val voice: String
+    )
+
     // Follow-up prompt methods
     fun getFollowUpPrompt(): String {
         return prefs.getString(KEY_FOLLOW_UP_PROMPT, null) ?: SystemPrompts.FOLLOW_UP_PROMPT
@@ -342,6 +432,102 @@ class ApiKeyManager(context: Context) {
             STT_PROVIDER_TOGETHER -> TOGETHER_BASE_URL
             STT_PROVIDER_CUSTOM -> ""
             else -> OPENAI_BASE_URL
+        }
+
+        // TTS provider constants
+        const val TTS_PROVIDER_OPENAI = "openai"
+        const val TTS_PROVIDER_TOGETHER = "together"
+        const val TTS_PROVIDER_CUSTOM = "custom"
+        const val TTS_PROVIDER_ONDEVICE = "ondevice"
+
+        private const val KEY_TTS_PROVIDER = "tts_provider"
+        private const val KEY_TTS_BASE_URL = "tts_base_url"
+        private const val KEY_TTS_CUSTOM_API_KEY = "tts_custom_api_key"
+        private const val KEY_TTS_MODEL_PREFIX = "tts_model_"
+        private const val KEY_TTS_VOICE_PREFIX = "tts_voice_"
+
+        const val DEFAULT_TTS_MODEL_OPENAI = "gpt-4o-mini-tts"
+        const val DEFAULT_TTS_MODEL_TOGETHER = "canopylabs/orpheus-3b-0.1-ft"
+        const val DEFAULT_TTS_VOICE_OPENAI = "marin"
+        const val DEFAULT_TTS_VOICE_TOGETHER = "tara"
+
+        private fun ttsModelKey(provider: String): String = "${KEY_TTS_MODEL_PREFIX}$provider"
+        private fun ttsVoiceKey(provider: String): String = "${KEY_TTS_VOICE_PREFIX}$provider"
+
+        private fun defaultTtsModel(provider: String): String = when (provider) {
+            TTS_PROVIDER_OPENAI -> DEFAULT_TTS_MODEL_OPENAI
+            TTS_PROVIDER_TOGETHER -> DEFAULT_TTS_MODEL_TOGETHER
+            TTS_PROVIDER_CUSTOM -> ""
+            TTS_PROVIDER_ONDEVICE -> ""
+            else -> DEFAULT_TTS_MODEL_OPENAI
+        }
+
+        private fun defaultTtsVoice(provider: String): String = when (provider) {
+            TTS_PROVIDER_OPENAI -> DEFAULT_TTS_VOICE_OPENAI
+            TTS_PROVIDER_TOGETHER -> DEFAULT_TTS_VOICE_TOGETHER
+            TTS_PROVIDER_CUSTOM -> ""
+            TTS_PROVIDER_ONDEVICE -> ""
+            else -> DEFAULT_TTS_VOICE_OPENAI
+        }
+
+        private fun defaultTtsBaseUrl(provider: String): String = when (provider) {
+            TTS_PROVIDER_OPENAI -> OPENAI_BASE_URL
+            TTS_PROVIDER_TOGETHER -> TOGETHER_BASE_URL
+            TTS_PROVIDER_CUSTOM -> ""
+            TTS_PROVIDER_ONDEVICE -> ""
+            else -> OPENAI_BASE_URL
+        }
+
+        /**
+         * Pure TTS config resolver — no SharedPreferences dependency, fully testable.
+         */
+        fun resolveTtsConfig(
+            providerId: String,
+            openaiApiKey: String?,
+            togetherApiKey: String?,
+            customApiKey: String?,
+            ttsModel: String,
+            ttsVoice: String,
+            ttsBaseUrl: String,
+            selectedVoice: String? = null
+        ): TtsConfig {
+            return when (providerId) {
+                TTS_PROVIDER_OPENAI -> TtsConfig(
+                    provider = TTS_PROVIDER_OPENAI,
+                    baseUrl = OPENAI_BASE_URL,
+                    apiKey = openaiApiKey,
+                    model = ttsModel.ifBlank { DEFAULT_TTS_MODEL_OPENAI },
+                    voice = selectedVoice?.takeIf { it.isNotBlank() } ?: ttsVoice.ifBlank { DEFAULT_TTS_VOICE_OPENAI }
+                )
+                TTS_PROVIDER_TOGETHER -> TtsConfig(
+                    provider = TTS_PROVIDER_TOGETHER,
+                    baseUrl = TOGETHER_BASE_URL,
+                    apiKey = togetherApiKey?.takeIf { it.isNotBlank() },
+                    model = ttsModel.ifBlank { DEFAULT_TTS_MODEL_TOGETHER },
+                    voice = ttsVoice.ifBlank { DEFAULT_TTS_VOICE_TOGETHER }
+                )
+                TTS_PROVIDER_CUSTOM -> TtsConfig(
+                    provider = TTS_PROVIDER_CUSTOM,
+                    baseUrl = if (ttsBaseUrl.endsWith("/")) ttsBaseUrl else "$ttsBaseUrl/",
+                    apiKey = customApiKey?.takeIf { it.isNotBlank() },
+                    model = ttsModel,
+                    voice = ttsVoice
+                )
+                TTS_PROVIDER_ONDEVICE -> TtsConfig(
+                    provider = TTS_PROVIDER_ONDEVICE,
+                    baseUrl = null,
+                    apiKey = null,
+                    model = "",
+                    voice = ""
+                )
+                else -> TtsConfig(
+                    provider = TTS_PROVIDER_OPENAI,
+                    baseUrl = OPENAI_BASE_URL,
+                    apiKey = openaiApiKey,
+                    model = ttsModel.ifBlank { DEFAULT_TTS_MODEL_OPENAI },
+                    voice = selectedVoice?.takeIf { it.isNotBlank() } ?: ttsVoice.ifBlank { DEFAULT_TTS_VOICE_OPENAI }
+                )
+            }
         }
 
         /**

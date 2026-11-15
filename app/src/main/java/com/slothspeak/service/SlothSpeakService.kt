@@ -27,7 +27,10 @@ import com.slothspeak.api.OpenAIClient
 import com.slothspeak.audio.AudioFocusManager
 import com.slothspeak.audio.AudioPlayer
 import com.slothspeak.audio.BluetoothAudioRouter
+import com.slothspeak.audio.OpenAiCompatibleTtsSynthesizer
+import com.slothspeak.audio.OnDeviceTtsSynthesizer
 import com.slothspeak.audio.TtsProcessor
+import com.slothspeak.audio.TtsSynthesizer
 import com.slothspeak.audio.VadAudioRecorder
 import com.slothspeak.data.ApiKeyManager
 import com.slothspeak.data.CompatibleProviderManager
@@ -78,6 +81,7 @@ class SlothSpeakService : Service() {
     private var playbackWakeLock: PowerManager.WakeLock? = null
     private var vadRecorder: VadAudioRecorder? = null
     private var followUpJob: Job? = null
+    private var onDeviceTtsSynthesizer: OnDeviceTtsSynthesizer? = null
 
     private lateinit var apiKeyManager: ApiKeyManager
     private lateinit var openAIClient: OpenAIClient
@@ -284,6 +288,26 @@ class SlothSpeakService : Service() {
     private fun activateMediaSession() {
         mediaSession?.isActive = true
         updateMediaSessionState(AndroidPlaybackState.STATE_PLAYING)
+    }
+
+    // ============================================================
+    // TTS synthesizer factory
+    // ============================================================
+
+    private fun createTtsSynthesizer(): TtsSynthesizer {
+        val config = apiKeyManager.getEffectiveTtsConfig()
+        return when (config.provider) {
+            ApiKeyManager.TTS_PROVIDER_ONDEVICE -> {
+                var engine = onDeviceTtsSynthesizer
+                if (engine == null) {
+                    engine = OnDeviceTtsSynthesizer(applicationContext)
+                    onDeviceTtsSynthesizer = engine
+                }
+                engine
+            }
+            else ->
+                OpenAiCompatibleTtsSynthesizer(config)
+        }
     }
 
     private fun deactivateMediaSession() {
@@ -713,9 +737,16 @@ class SlothSpeakService : Service() {
 
         // Step 3: TTS
         val audioFiles: List<File>
-        if (apiKeyManager.hasKey()) {
+        if (apiKeyManager.isTtsConfigured()) {
             val sessionDir = File(filesDir, "audio/${System.currentTimeMillis()}")
-            val ttsProcessor = TtsProcessor(openAIClient, sessionDir, apiKeyManager.getSelectedVoice(), apiKeyManager.getTtsInstructions())
+            val ttsConfig = apiKeyManager.getEffectiveTtsConfig()
+            val ttsInstructions = if (ttsConfig.provider == ApiKeyManager.TTS_PROVIDER_OPENAI) {
+                apiKeyManager.getTtsInstructions()
+            } else {
+                null
+            }
+            val synthesizer = createTtsSynthesizer()
+            val ttsProcessor = TtsProcessor(synthesizer, sessionDir, ttsInstructions)
 
             val ttsMonitorJob = serviceScope.launch {
                 ttsProcessor.progress.collect { progress ->
@@ -754,7 +785,7 @@ class SlothSpeakService : Service() {
             }
             ttsMonitorJob.cancel()
         } else {
-            // No OpenAI key — skip TTS, proceed with empty audio
+            // No TTS configured — skip synthesis, proceed with empty audio
             audioFiles = emptyList()
         }
 
@@ -1292,9 +1323,16 @@ class SlothSpeakService : Service() {
         val dbModel = compatProvider?.modelId ?: model
 
         val audioFiles: List<File>
-        if (apiKeyManager.hasKey()) {
+        if (apiKeyManager.isTtsConfigured()) {
             val sessionDir = File(filesDir, "audio/${System.currentTimeMillis()}")
-            val ttsProcessor = TtsProcessor(openAIClient, sessionDir, apiKeyManager.getSelectedVoice(), apiKeyManager.getTtsInstructions())
+            val ttsConfig = apiKeyManager.getEffectiveTtsConfig()
+            val ttsInstructions = if (ttsConfig.provider == ApiKeyManager.TTS_PROVIDER_OPENAI) {
+                apiKeyManager.getTtsInstructions()
+            } else {
+                null
+            }
+            val synthesizer = createTtsSynthesizer()
+            val ttsProcessor = TtsProcessor(synthesizer, sessionDir, ttsInstructions)
 
             val ttsMonitorJob = serviceScope.launch {
                 ttsProcessor.progress.collect { progress ->
@@ -1333,7 +1371,7 @@ class SlothSpeakService : Service() {
             }
             ttsMonitorJob.cancel()
         } else {
-            // No OpenAI key — skip TTS, proceed with empty audio
+            // No TTS configured — skip synthesis, proceed with empty audio
             audioFiles = emptyList()
         }
 
@@ -1500,10 +1538,16 @@ class SlothSpeakService : Service() {
     private suspend fun playFollowUpPrompt() {
         try {
             // Generate or use cached follow-up prompt audio using TTS
-            val voice = apiKeyManager.getSelectedVoice()
+            val ttsConfig = apiKeyManager.getEffectiveTtsConfig()
+            val voice = if (ttsConfig.provider == ApiKeyManager.TTS_PROVIDER_OPENAI) {
+                apiKeyManager.getSelectedVoice()
+            } else {
+                ttsConfig.voice
+            }
             val promptText = apiKeyManager.getFollowUpPrompt()
             val textHash = promptText.hashCode()
-            val promptFile = File(filesDir, "follow_up_prompt_${voice}_${textHash}.mp3")
+            val providerSuffix = ttsConfig.provider
+            val promptFile = File(filesDir, "follow_up_prompt_${providerSuffix}_${voice}_${textHash}.mp3")
 
             if (!promptFile.exists() || promptFile.length() == 0L) {
                 // Clean up old cached follow-up prompt files
@@ -1512,12 +1556,12 @@ class SlothSpeakService : Service() {
                 }?.forEach { it.delete() }
 
                 // Generate the prompt audio
-                Log.d(TAG, "Generating follow-up prompt audio for voice: $voice, text: \"$promptText\"")
+                Log.d(TAG, "Generating follow-up prompt audio for provider=$providerSuffix, text: \"$promptText\"")
                 try {
-                    openAIClient.createSpeech(
+                    val synthesizer = createTtsSynthesizer()
+                    synthesizer.synthesize(
                         text = promptText,
                         outputFile = promptFile,
-                        voice = voice,
                         instructions = "Speak naturally and warmly, brief and conversational."
                     )
                 } catch (e: Exception) {
@@ -1792,9 +1836,16 @@ class SlothSpeakService : Service() {
 
         // Step 3: TTS
         val audioFiles: List<File>
-        if (apiKeyManager.hasKey()) {
+        if (apiKeyManager.isTtsConfigured()) {
             val sessionDir = File(filesDir, "audio/${System.currentTimeMillis()}")
-            val ttsProcessor = TtsProcessor(openAIClient, sessionDir, apiKeyManager.getSelectedVoice(), apiKeyManager.getTtsInstructions())
+            val ttsConfig = apiKeyManager.getEffectiveTtsConfig()
+            val ttsInstructions = if (ttsConfig.provider == ApiKeyManager.TTS_PROVIDER_OPENAI) {
+                apiKeyManager.getTtsInstructions()
+            } else {
+                null
+            }
+            val synthesizer = createTtsSynthesizer()
+            val ttsProcessor = TtsProcessor(synthesizer, sessionDir, ttsInstructions)
 
             val ttsMonitorJob = serviceScope.launch {
                 ttsProcessor.progress.collect { progress ->
@@ -1827,7 +1878,7 @@ class SlothSpeakService : Service() {
             }
             ttsMonitorJob.cancel()
         } else {
-            // No OpenAI key — skip TTS, proceed with empty audio
+            // No TTS configured — skip TTS, proceed with empty audio
             audioFiles = emptyList()
         }
 
