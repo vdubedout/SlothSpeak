@@ -749,7 +749,8 @@ class SlothSpeakService : Service() {
         launchPipelinePlayback(
             questionText, answerText, responseId, conversationId,
             audioFiles, dbModel, lastReasoningEffort, lastLlmResponseSeconds,
-            lastAnswerTextRich
+            lastAnswerTextRich,
+            reasoningText = lastReasoningText
         )
     }
 
@@ -1298,7 +1299,8 @@ class SlothSpeakService : Service() {
         launchPipelinePlayback(
             questionText, answerText, responseId, conversationId,
             audioFiles, dbModel, reasoningEffort, llmResponseSeconds,
-            answerTextRich
+            answerTextRich,
+            reasoningText = lastReasoningText
         )
     }
 
