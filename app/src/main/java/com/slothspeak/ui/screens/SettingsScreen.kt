@@ -579,57 +579,22 @@ fun SettingsScreen(
             Spacer(modifier = Modifier.height(12.dp))
 
             // Provider list
-            state.compatProviders.forEach { provider ->
-                val isCustom = provider.id.startsWith("custom-")
-
-                Card(
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surface
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 8.dp)
-                        .clickable {
-                            editingCompatProvider = provider
-                            compatEditDisplayName = provider.displayName
-                            compatEditBaseUrl = provider.baseUrl
-                            compatEditModelId = provider.modelId
-                            compatEditKey = compatibleProviderManager.getProviderKey(provider.id) ?: ""
-                            compatEditThinkingEnabled = provider.thinkingEnabled
-                            compatEditReasoningEffort = provider.reasoningEffort
-                            compatEditSendThinkingParams = provider.sendThinkingParams
-                            compatEditMaxTokens = provider.maxTokens?.toString() ?: ""
-                            compatSelectedTemplate = null
-                        }
-                ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = provider.displayName,
-                                    style = MaterialTheme.typography.bodyLarge
-                                )
-                                Text(
-                                    text = "${provider.modelId} · ${provider.baseUrl}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = TextSecondary
-                                )
-                            }
-                            IconButton(
-                                onClick = { compatShowDeleteConfirm = provider.id },
-                                modifier = Modifier.size(36.dp)
-                            ) {
-                                Icon(
-                                    Icons.Default.Delete,
-                                    contentDescription = "Delete",
-                                    tint = ErrorRed,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-                        }
-                    }
-                }
-            }
+            CompatProvidersList(
+                providers = state.compatProviders,
+                onProviderEdit = { provider ->
+                    editingCompatProvider = provider
+                    compatEditDisplayName = provider.displayName
+                    compatEditBaseUrl = provider.baseUrl
+                    compatEditModelId = provider.modelId
+                    compatEditKey = compatibleProviderManager.getProviderKey(provider.id) ?: ""
+                    compatEditThinkingEnabled = provider.thinkingEnabled
+                    compatEditReasoningEffort = provider.reasoningEffort
+                    compatEditSendThinkingParams = provider.sendThinkingParams
+                    compatEditMaxTokens = provider.maxTokens?.toString() ?: ""
+                    compatSelectedTemplate = null
+                },
+                onProviderDelete = { id -> compatShowDeleteConfirm = id }
+            )
 
             Spacer(modifier = Modifier.height(24.dp))
 
@@ -2303,6 +2268,52 @@ private fun ModelOption(
                 style = MaterialTheme.typography.bodySmall,
                 color = TextSecondary
             )
+        }
+    }
+}
+
+@Composable
+fun CompatProvidersList(
+    providers: List<CompatibleProviderConfig>,
+    onProviderEdit: (CompatibleProviderConfig) -> Unit,
+    onProviderDelete: (String) -> Unit
+) {
+    providers.forEach { provider ->
+        Card(
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surface
+            ),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 8.dp)
+                .clickable { onProviderEdit(provider) }
+        ) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = provider.displayName,
+                            style = MaterialTheme.typography.bodyLarge
+                        )
+                        Text(
+                            text = "${provider.modelId} · ${provider.baseUrl}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary
+                        )
+                    }
+                    IconButton(
+                        onClick = { onProviderDelete(provider.id) },
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Delete,
+                            contentDescription = "Delete",
+                            tint = ErrorRed,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+            }
         }
     }
 }

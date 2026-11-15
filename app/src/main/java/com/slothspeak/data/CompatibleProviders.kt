@@ -17,15 +17,18 @@ data class CompatibleProviderConfig(
     val sendThinkingParams: Boolean = true,
     val maxTokens: Int? = null
 ) {
-    fun toJson(): JSONObject = JSONObject().apply {
-        put("id", id)
-        put("displayName", displayName)
-        put("baseUrl", baseUrl)
-        put("modelId", modelId)
-        put("thinkingEnabled", thinkingEnabled)
-        put("reasoningEffort", reasoningEffort)
-        put("sendThinkingParams", sendThinkingParams)
-        put("maxTokens", maxTokens ?: JSONObject.NULL)
+    fun toJson(): JSONObject {
+        val obj = JSONObject()
+        obj.put("id", id)
+        obj.put("displayName", displayName)
+        obj.put("baseUrl", baseUrl)
+        obj.put("modelId", modelId)
+        obj.put("thinkingEnabled", thinkingEnabled)
+        obj.put("reasoningEffort", reasoningEffort)
+        obj.put("sendThinkingParams", sendThinkingParams)
+        if (maxTokens != null) obj.put("maxTokens", maxTokens!!.toInt())
+        else obj.put("maxTokens", JSONObject.NULL)
+        return obj
     }
 
     companion object {
