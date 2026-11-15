@@ -227,6 +227,108 @@ class ApiKeyManager(context: Context) {
         prefs.edit().remove(KEY_TTS_INSTRUCTIONS).apply()
     }
 
+    // ============================================================
+    // STT (Speech-to-Text) Provider Config
+    // ============================================================
+
+    fun getSttProvider(): String {
+        return prefs.getString(KEY_STT_PROVIDER, STT_PROVIDER_OPENAI) ?: STT_PROVIDER_OPENAI
+    }
+
+    fun setSttProvider(id: String) {
+        prefs.edit().putString(KEY_STT_PROVIDER, id).apply()
+    }
+
+    fun getSttApiKey(): String? {
+        return prefs.getString(KEY_STT_API_KEY, null)?.takeIf { it.isNotBlank() }
+    }
+
+    fun saveSttApiKey(key: String) {
+        prefs.edit().putString(KEY_STT_API_KEY, key.trim()).apply()
+    }
+
+    fun deleteSttApiKey() {
+        prefs.edit().remove(KEY_STT_API_KEY).apply()
+    }
+
+    fun hasSttApiKey(): Boolean {
+        return getSttApiKey() != null
+    }
+
+    fun getSttModel(): String {
+        val provider = getSttProvider()
+        val defaultModel = when (provider) {
+            STT_PROVIDER_OPENAI -> DEFAULT_STT_MODEL_OPENAI
+            STT_PROVIDER_TOGETHER -> DEFAULT_STT_MODEL_TOGETHER
+            STT_PROVIDER_CUSTOM -> ""
+            else -> DEFAULT_STT_MODEL_OPENAI
+        }
+        return prefs.getString(KEY_STT_MODEL, defaultModel)?.takeIf { it.isNotBlank() } ?: defaultModel
+    }
+
+    fun setSttModel(model: String) {
+        prefs.edit().putString(KEY_STT_MODEL, model).apply()
+    }
+
+    fun getSttBaseUrl(): String {
+        val provider = getSttProvider()
+        val defaultUrl = when (provider) {
+            STT_PROVIDER_OPENAI -> OPENAI_BASE_URL
+            STT_PROVIDER_TOGETHER -> TOGETHER_BASE_URL
+            STT_PROVIDER_CUSTOM -> ""
+            else -> OPENAI_BASE_URL
+        }
+        return prefs.getString(KEY_STT_BASE_URL, null)?.takeIf { it.isNotBlank() } ?: defaultUrl
+    }
+
+    fun setSttBaseUrl(url: String) {
+        val normalized = if (url.endsWith("/")) url else "$url/"
+        prefs.edit().putString(KEY_STT_BASE_URL, normalized).apply()
+    }
+
+    fun getEffectiveSttConfig(): SttConfig {
+        val providerId = getSttProvider()
+        val baseUrl = getSttBaseUrl()
+        val model = getSttModel()
+
+        return when (providerId) {
+            STT_PROVIDER_OPENAI -> SttConfig(
+                baseUrl = OPENAI_BASE_URL,
+                apiKey = getKey(),
+                model = model,
+                providerLabel = "OpenAI"
+            )
+            STT_PROVIDER_TOGETHER -> SttConfig(
+                baseUrl = TOGETHER_BASE_URL,
+                apiKey = getSttApiKey(),
+                model = model,
+                providerLabel = "Together"
+            )
+            STT_PROVIDER_CUSTOM -> {
+                val customKey = getSttApiKey()?.takeIf { it.isNotBlank() }
+                SttConfig(
+                    baseUrl = baseUrl,
+                    apiKey = customKey,
+                    model = model,
+                    providerLabel = "Custom"
+                )
+            }
+            else -> SttConfig(
+                baseUrl = OPENAI_BASE_URL,
+                apiKey = getKey(),
+                model = model,
+                providerLabel = "OpenAI"
+            )
+        }
+    }
+
+    data class SttConfig(
+        val baseUrl: String,
+        val apiKey: String?,
+        val model: String,
+        val providerLabel: String
+    )
+
     // Follow-up prompt methods
     fun getFollowUpPrompt(): String {
         return prefs.getString(KEY_FOLLOW_UP_PROMPT, null) ?: SystemPrompts.FOLLOW_UP_PROMPT
@@ -243,6 +345,22 @@ class ApiKeyManager(context: Context) {
     companion object {
         private const val PREFS_FILE = "slothspeak_secure_prefs"
         private const val KEY_API_KEY = "openai_api_key"
+
+        // STT provider constants
+        const val STT_PROVIDER_OPENAI = "openai"
+        const val STT_PROVIDER_TOGETHER = "together"
+        const val STT_PROVIDER_CUSTOM = "custom"
+
+        private const val KEY_STT_PROVIDER = "stt_provider"
+        private const val KEY_STT_API_KEY = "stt_api_key"
+        private const val KEY_STT_MODEL = "stt_model"
+        private const val KEY_STT_BASE_URL = "stt_base_url"
+
+        private const val OPENAI_BASE_URL = "https://api.openai.com/v1/"
+        private const val TOGETHER_BASE_URL = "https://api.together.ai/v1/"
+
+        const val DEFAULT_STT_MODEL_OPENAI = "gpt-4o-transcribe"
+        const val DEFAULT_STT_MODEL_TOGETHER = "openai/whisper-large-v3"
         private const val KEY_GEMINI_API_KEY = "gemini_api_key"
         private const val KEY_CLAUDE_API_KEY = "claude_api_key"
         private const val KEY_CLAUDE_EFFORT = "claude_effort"

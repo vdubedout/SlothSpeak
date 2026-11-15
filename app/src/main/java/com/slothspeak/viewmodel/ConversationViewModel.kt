@@ -151,7 +151,7 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
     init {
         _uiState.value = _uiState.value.copy(
             hasApiKey = apiKeyManager.hasKey(),
-            voiceAvailable = apiKeyManager.hasKey(),
+            voiceAvailable = computeVoiceAvailable(),
             canConverse = computeCanConverse()
         )
         checkStorage()
@@ -161,9 +161,20 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
     fun refreshApiKeyStatus() {
         _uiState.value = _uiState.value.copy(
             hasApiKey = apiKeyManager.hasKey(),
-            voiceAvailable = apiKeyManager.hasKey(),
+            voiceAvailable = computeVoiceAvailable(),
             canConverse = computeCanConverse()
         )
+    }
+
+    private fun computeVoiceAvailable(): Boolean {
+        val config = apiKeyManager.getEffectiveSttConfig()
+        return when (apiKeyManager.getSttProvider()) {
+            ApiKeyManager.STT_PROVIDER_OPENAI -> apiKeyManager.hasKey()
+            ApiKeyManager.STT_PROVIDER_TOGETHER -> apiKeyManager.hasSttApiKey()
+            ApiKeyManager.STT_PROVIDER_CUSTOM ->
+                config.baseUrl.isNotBlank() && config.model.isNotBlank()
+            else -> false
+        }
     }
 
     private fun computeCanConverse(): Boolean {

@@ -273,9 +273,34 @@ fun SettingsScreen(
                     }
 
                     Text(
-                        text = "Used for voice transcription and text-to-speech. Optional — you can chat by text with other providers without it.",
+                        text = "Used for text-to-speech and OpenAI models. Voice transcription uses the Speech-to-Text provider.",
                         style = MaterialTheme.typography.bodySmall,
                         color = TextSecondary
+                    )
+
+                    Spacer(modifier = Modifier.height(24.dp))
+
+                    // Speech-to-Text Section
+                    SectionHeader("Speech-to-Text")
+
+                    Text(
+                        text = "Choose which provider handles voice transcription.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+
+                    SttSection(
+                        sttProvider = state.sttProvider,
+                        hasSttApiKey = state.hasSttApiKey,
+                        sttModel = state.sttModel,
+                        sttBaseUrl = state.sttBaseUrl,
+                        sttKeySaved = state.sttKeySaved,
+                        onSetProvider = { viewModel.setSttProvider(it) },
+                        onSaveApiKey = { viewModel.saveSttApiKey(it) },
+                        onDeleteApiKey = { viewModel.deleteSttApiKey() },
+                        onSetModel = { viewModel.setSttModel(it) },
+                        onSetBaseUrl = { viewModel.setSttBaseUrl(it) }
                     )
 
                     Spacer(modifier = Modifier.height(24.dp))
@@ -2344,6 +2369,392 @@ fun CompatProvidersList(
                             tint = ErrorRed,
                             modifier = Modifier.size(20.dp)
                         )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun SttSection(
+    sttProvider: String,
+    hasSttApiKey: Boolean,
+    sttModel: String,
+    sttBaseUrl: String,
+    sttKeySaved: Boolean,
+    onSetProvider: (String) -> Unit,
+    onSaveApiKey: (String) -> Unit,
+    onDeleteApiKey: () -> Unit,
+    onSetModel: (String) -> Unit,
+    onSetBaseUrl: (String) -> Unit
+) {
+    var sttKeyInput by remember { mutableStateOf("") }
+    var showSttKey by remember { mutableStateOf(false) }
+
+    // Provider selection radio buttons
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        ),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = "Provider",
+                style = MaterialTheme.typography.bodyMedium,
+                color = TextSecondary
+            )
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            // OpenAI
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                RadioButton(
+                    selected = sttProvider == ApiKeyManager.STT_PROVIDER_OPENAI,
+                    onClick = { onSetProvider(ApiKeyManager.STT_PROVIDER_OPENAI) },
+                    colors = RadioButtonDefaults.colors(
+                        selectedColor = AccentGreen,
+                        unselectedColor = TextSecondary
+                    )
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Column {
+                    Text(
+                        text = "OpenAI (gpt-4o-transcribe)",
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                    Text(
+                        text = "Uses your OpenAI API key above",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Together
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                RadioButton(
+                    selected = sttProvider == ApiKeyManager.STT_PROVIDER_TOGETHER,
+                    onClick = { onSetProvider(ApiKeyManager.STT_PROVIDER_TOGETHER) },
+                    colors = RadioButtonDefaults.colors(
+                        selectedColor = AccentGreen,
+                        unselectedColor = TextSecondary
+                    )
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Column {
+                    Text(
+                        text = "Together (whisper-large-v3)",
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                    Text(
+                        text = "Requires a Together.ai API key",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Custom
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                RadioButton(
+                    selected = sttProvider == ApiKeyManager.STT_PROVIDER_CUSTOM,
+                    onClick = { onSetProvider(ApiKeyManager.STT_PROVIDER_CUSTOM) },
+                    colors = RadioButtonDefaults.colors(
+                        selectedColor = AccentGreen,
+                        unselectedColor = TextSecondary
+                    )
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Column {
+                    Text(
+                        text = "Custom (OpenAI-compatible)",
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                    Text(
+                        text = "Self-hosted or any OpenAI-compatible STT endpoint",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
+                }
+            }
+        }
+    }
+
+    Spacer(modifier = Modifier.height(12.dp))
+
+    // Provider-specific configuration card
+    when (sttProvider) {
+        ApiKeyManager.STT_PROVIDER_OPENAI -> {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surface
+                ),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "Uses your OpenAI API key configured above.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TextSecondary
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "Model: gpt-4o-transcribe",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
+                }
+            }
+        }
+
+        ApiKeyManager.STT_PROVIDER_TOGETHER -> {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surface
+                ),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = if (hasSttApiKey) "API key is saved" else "No API key set",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (hasSttApiKey) AccentGreen else TextSecondary
+                    )
+
+                    if (sttKeySaved) {
+                        Text(
+                            text = "Key saved successfully!",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = AccentGreen
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    OutlinedTextField(
+                        value = sttKeyInput,
+                        onValueChange = { sttKeyInput = it },
+                        label = { Text("Together.ai API Key") },
+                        placeholder = { Text("tgp-...") },
+                        visualTransformation = if (showSttKey) {
+                            VisualTransformation.None
+                        } else {
+                            PasswordVisualTransformation()
+                        },
+                        trailingIcon = {
+                            IconButton(onClick = { showSttKey = !showSttKey }) {
+                                Icon(
+                                    imageVector = if (showSttKey) Icons.Default.VisibilityOff
+                                        else Icons.Default.Visibility,
+                                    contentDescription = if (showSttKey) "Hide" else "Show",
+                                    tint = TextSecondary
+                                )
+                            }
+                        },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = AccentGreen,
+                            cursorColor = AccentGreen,
+                            focusedLabelColor = AccentGreen
+                        )
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Row {
+                        Button(
+                            onClick = {
+                                onSaveApiKey(sttKeyInput)
+                                sttKeyInput = ""
+                            },
+                            enabled = sttKeyInput.isNotBlank(),
+                            colors = ButtonDefaults.buttonColors(containerColor = AccentGreen)
+                        ) {
+                            Text("Save")
+                        }
+
+                        if (hasSttApiKey) {
+                            Spacer(modifier = Modifier.width(8.dp))
+                            OutlinedButton(
+                                onClick = { onDeleteApiKey() },
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    contentColor = ErrorRed
+                                )
+                            ) {
+                                Text("Delete Key")
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Model field
+                    Text(
+                        text = "Model",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TextSecondary
+                    )
+
+                    OutlinedTextField(
+                        value = sttModel,
+                        onValueChange = { onSetModel(it) },
+                        label = { Text("Model ID") },
+                        placeholder = { Text("openai/whisper-large-v3") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = AccentGreen,
+                            cursorColor = AccentGreen,
+                            focusedLabelColor = AccentGreen
+                        )
+                    )
+                }
+            }
+        }
+
+        ApiKeyManager.STT_PROVIDER_CUSTOM -> {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surface
+                ),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    // Base URL
+                    Text(
+                        text = "Base URL",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TextSecondary
+                    )
+
+                    OutlinedTextField(
+                        value = sttBaseUrl,
+                        onValueChange = { onSetBaseUrl(it) },
+                        label = { Text("Base URL (include /v1/)") },
+                        placeholder = { Text("http://192.168.1.100:8000/v1/") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = AccentGreen,
+                            cursorColor = AccentGreen,
+                            focusedLabelColor = AccentGreen
+                        )
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Model
+                    Text(
+                        text = "Model",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TextSecondary
+                    )
+
+                    OutlinedTextField(
+                        value = sttModel,
+                        onValueChange = { onSetModel(it) },
+                        label = { Text("Model ID") },
+                        placeholder = { Text("openai/whisper-large-v3") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = AccentGreen,
+                            cursorColor = AccentGreen,
+                            focusedLabelColor = AccentGreen
+                        )
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // API key (optional)
+                    Text(
+                        text = if (hasSttApiKey) "API key is saved (optional)" else "API key (optional)",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (hasSttApiKey) AccentGreen else TextSecondary
+                    )
+
+                    if (sttKeySaved) {
+                        Text(
+                            text = "Key saved successfully!",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = AccentGreen
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    OutlinedTextField(
+                        value = sttKeyInput,
+                        onValueChange = { sttKeyInput = it },
+                        label = { Text("API Key (leave blank for no auth)") },
+                        placeholder = { Text("Optional API key") },
+                        visualTransformation = if (showSttKey) {
+                            VisualTransformation.None
+                        } else {
+                            PasswordVisualTransformation()
+                        },
+                        trailingIcon = {
+                            IconButton(onClick = { showSttKey = !showSttKey }) {
+                                Icon(
+                                    imageVector = if (showSttKey) Icons.Default.VisibilityOff
+                                        else Icons.Default.Visibility,
+                                    contentDescription = if (showSttKey) "Hide" else "Show",
+                                    tint = TextSecondary
+                                )
+                            }
+                        },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = AccentGreen,
+                            cursorColor = AccentGreen,
+                            focusedLabelColor = AccentGreen
+                        )
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Row {
+                        Button(
+                            onClick = {
+                                onSaveApiKey(sttKeyInput)
+                                sttKeyInput = ""
+                            },
+                            enabled = sttKeyInput.isNotBlank(),
+                            colors = ButtonDefaults.buttonColors(containerColor = AccentGreen)
+                        ) {
+                            Text("Save")
+                        }
+
+                        if (hasSttApiKey) {
+                            Spacer(modifier = Modifier.width(8.dp))
+                            OutlinedButton(
+                                onClick = { onDeleteApiKey() },
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    contentColor = ErrorRed
+                                )
+                            ) {
+                                Text("Delete Key")
+                            }
+                        }
                     }
                 }
             }
