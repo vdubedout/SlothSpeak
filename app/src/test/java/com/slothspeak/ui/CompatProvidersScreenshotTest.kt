@@ -20,6 +20,7 @@ import com.slothspeak.ui.components.QAPairCard
 import com.slothspeak.ui.screens.CompatProvidersList
 import com.slothspeak.ui.screens.SttSection
 import com.slothspeak.ui.screens.TextInputQuestionBar
+import com.slothspeak.ui.screens.TtsSection
 import com.slothspeak.ui.theme.SlothSpeakTheme
 import org.junit.Rule
 import org.junit.Test
@@ -264,5 +265,55 @@ the weather is most favorable and the city's parks and gardens are at their most
 
         // PNG capture
         rule.onRoot().captureRoboImage("build/ui-screenshots/settings_sttSection.png")
+    }
+
+    // ========================
+    //  Test 6: TTS Settings Section
+    // ========================
+
+    @Test
+    fun settings_ttsSection_png() {
+        rule.setContent {
+            SlothSpeakTheme {
+                Surface(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            text = "Text-to-Speech",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = com.slothspeak.ui.theme.AccentGreen
+                        )
+                        TtsSection(
+                            ttsProvider = "together",
+                            ttsModel = "canopylabs/orpheus-3b-0.1-ft",
+                            ttsVoice = "tara",
+                            ttsBaseUrl = "https://api.together.ai/v1/",
+                            hasTtsCustomApiKey = false,
+                            ttsKeySaved = false,
+                            onSetProvider = {},
+                            onSetModel = {},
+                            onSetVoice = {},
+                            onSetBaseUrl = {},
+                            onSaveCustomApiKey = {},
+                            onDeleteCustomApiKey = {}
+                        )
+                    }
+                }
+            }
+        }
+        rule.waitForIdle()
+
+        // Semantics assertions — four provider rows
+        rule.onNodeWithText("OpenAI (gpt-4o-mini-tts)").assertIsDisplayed()
+        rule.onNodeWithText("Together (Orpheus)").assertIsDisplayed()
+        rule.onNodeWithText("Custom (OpenAI-compatible)").assertIsDisplayed()
+        rule.onNodeWithText("On-device (Android system TTS)").assertIsDisplayed()
+
+        // Together selected — model and voice fields should be visible
+        rule.onNodeWithText("Model").assertIsDisplayed()
+        rule.onNodeWithText("Voice").assertIsDisplayed()
+        rule.onNodeWithText("Uses your Together.ai API key from Speech-to-Text.").assertIsDisplayed()
+
+        // PNG capture
+        rule.onRoot().captureRoboImage("build/ui-screenshots/settings_ttsSection.png")
     }
 }
