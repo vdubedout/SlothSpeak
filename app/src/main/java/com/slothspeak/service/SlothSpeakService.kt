@@ -419,6 +419,65 @@ class SlothSpeakService : Service() {
         }
     }
 
+    /**
+     * Public entry point for text-only questions (no audio recording needed).
+     * Same bookkeeping as startPipeline but calls runPipelineFromText directly.
+     */
+    fun startTextPipeline(
+        questionText: String,
+        conversationId: Long?,
+        previousResponseId: String?
+    ) {
+        // Clean up any lingering early DB records from a previous cancelled pipeline
+        val staleQaPairId = earlyQaPairId
+        val staleConvId = earlyConversationId
+        val staleWasNew = earlyConversationWasNew
+        earlyConversationId = null
+        earlyQaPairId = null
+        earlyConversationWasNew = false
+        _activeConversationId.value = null
+        if (staleQaPairId != null) {
+            serviceScope.launch(Dispatchers.IO) {
+                try {
+                    database.conversationDao().deleteQAPair(staleQaPairId)
+                    if (staleWasNew && staleConvId != null) {
+                        val remaining = database.conversationDao().getQAPairCountForConversation(staleConvId)
+                        if (remaining == 0) {
+                            database.conversationDao().deleteConversation(staleConvId)
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to clean up stale early DB records", e)
+                }
+            }
+        }
+
+        pipelineSuperseded = false
+        lastPipelineProcessingState = null
+        pendingPipelineResult = null
+        isPipelineRunning = true
+        playbackJob?.cancel()
+        pipelineJob?.cancel()
+        pipelineJob = serviceScope.launch {
+            acquireWakeLock()
+            try {
+                runPipelineFromText(questionText, conversationId, previousResponseId)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val currentState = _pipelineState.value
+                if (currentState !is PipelineState.Error) {
+                    handleError(
+                        e, FailedStep.LLM,
+                        questionText = questionText
+                    )
+                }
+            } finally {
+                releaseWakeLock()
+            }
+        }
+    }
+
     private suspend fun runPipeline(
         audioFile: File,
         existingConversationId: Long?,
@@ -653,47 +712,51 @@ class SlothSpeakService : Service() {
         emitProcessingState(PipelineState.ThinkingComplete(questionText, answerText, responseId, lastAnswerTextRich))
 
         // Step 3: TTS
-        val sessionDir = File(filesDir, "audio/${System.currentTimeMillis()}")
-        val ttsProcessor = TtsProcessor(openAIClient, sessionDir, apiKeyManager.getSelectedVoice(), apiKeyManager.getTtsInstructions())
+        val audioFiles: List<File>
+        if (apiKeyManager.hasKey()) {
+            val sessionDir = File(filesDir, "audio/${System.currentTimeMillis()}")
+            val ttsProcessor = TtsProcessor(openAIClient, sessionDir, apiKeyManager.getSelectedVoice(), apiKeyManager.getTtsInstructions())
 
-        // Monitor TTS progress
-        val ttsMonitorJob = serviceScope.launch {
-            ttsProcessor.progress.collect { progress ->
-                if (progress.totalChunks > 0 && !progress.isComplete) {
-                    emitProcessingState(
-                        PipelineState.GeneratingAudio(
-                            questionText, answerText, responseId,
-                            progress.completedChunks, progress.totalChunks,
-                            progress.statusMessage,
-                            answerTextRich = lastAnswerTextRich
-                        ),
-                        "Audio ${progress.completedChunks}/${progress.totalChunks}: ${progress.statusMessage}"
-                    )
+            val ttsMonitorJob = serviceScope.launch {
+                ttsProcessor.progress.collect { progress ->
+                    if (progress.totalChunks > 0 && !progress.isComplete) {
+                        emitProcessingState(
+                            PipelineState.GeneratingAudio(
+                                questionText, answerText, responseId,
+                                progress.completedChunks, progress.totalChunks,
+                                progress.statusMessage,
+                                answerTextRich = lastAnswerTextRich
+                            ),
+                            "Audio ${progress.completedChunks}/${progress.totalChunks}: ${progress.statusMessage}"
+                        )
+                    }
                 }
             }
-        }
 
-        val ttsText = if (isGeminiDeepResearch) {
-            SpeechTextCleaner.cleanForSpeech(answerText)
-        } else {
-            answerText
-        }
+            val ttsText = if (isGeminiDeepResearch) {
+                SpeechTextCleaner.cleanForSpeech(answerText)
+            } else {
+                answerText
+            }
 
-        val audioFiles: List<File>
-        try {
-            audioFiles = ttsProcessor.processText(ttsText)
-        } catch (e: Exception) {
+            try {
+                audioFiles = ttsProcessor.processText(ttsText)
+            } catch (e: Exception) {
+                ttsMonitorJob.cancel()
+                handleError(
+                    e, FailedStep.TTS,
+                    questionText = questionText,
+                    answerText = answerText,
+                    responseId = responseId,
+                    answerTextRich = lastAnswerTextRich
+                )
+                return
+            }
             ttsMonitorJob.cancel()
-            handleError(
-                e, FailedStep.TTS,
-                questionText = questionText,
-                answerText = answerText,
-                responseId = responseId,
-                answerTextRich = lastAnswerTextRich
-            )
-            return
+        } else {
+            // No OpenAI key — skip TTS, proceed with empty audio
+            audioFiles = emptyList()
         }
-        ttsMonitorJob.cancel()
 
         // Step 4: Save to database (before playback so data isn't lost on cancel)
         val earlyConvId = earlyConversationId
@@ -798,6 +861,25 @@ class SlothSpeakService : Service() {
                         reasoningText = reasoningText
                     )
                     updateNotification("Answer ready (skipped during call)")
+                    delay(1000)
+                    stopSelf()
+                    return@launch
+                }
+
+                // No audio files (TTS skipped because no OpenAI key) — emit Complete directly
+                if (audioFiles.isEmpty()) {
+                    Log.i(TAG, "No audio files — skipping playback, conversation saved to history")
+                    isPipelineRunning = false
+                    _activeConversationId.value = null
+                    _pipelineState.value = PipelineState.Complete(
+                        questionText, answerText, responseId, conversationId, audioFiles,
+                        model = model,
+                        reasoningEffort = reasoningEffort,
+                        llmResponseSeconds = llmResponseSeconds,
+                        answerTextRich = answerTextRich,
+                        reasoningText = reasoningText
+                    )
+                    updateNotification("Answer ready")
                     delay(1000)
                     stopSelf()
                     return@launch
@@ -1208,46 +1290,52 @@ class SlothSpeakService : Service() {
         val compatId = apiKeyManager.getSelectedCompatProviderId()
         val compatProvider = compatibleProviderManager.getProvider(compatId ?: "")
         val dbModel = compatProvider?.modelId ?: model
-        val sessionDir = File(filesDir, "audio/${System.currentTimeMillis()}")
-        val ttsProcessor = TtsProcessor(openAIClient, sessionDir, apiKeyManager.getSelectedVoice(), apiKeyManager.getTtsInstructions())
-
-        val ttsMonitorJob = serviceScope.launch {
-            ttsProcessor.progress.collect { progress ->
-                if (progress.totalChunks > 0 && !progress.isComplete) {
-                    emitProcessingState(
-                        PipelineState.GeneratingAudio(
-                            questionText, answerText, responseId,
-                            progress.completedChunks, progress.totalChunks,
-                            progress.statusMessage,
-                            answerTextRich = answerTextRich
-                        ),
-                        "Audio ${progress.completedChunks}/${progress.totalChunks}: ${progress.statusMessage}"
-                    )
-                }
-            }
-        }
-
-        val ttsText = if (model == ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH) {
-            SpeechTextCleaner.cleanForSpeech(answerText)
-        } else {
-            answerText
-        }
 
         val audioFiles: List<File>
-        try {
-            audioFiles = ttsProcessor.processText(ttsText)
-        } catch (e: Exception) {
+        if (apiKeyManager.hasKey()) {
+            val sessionDir = File(filesDir, "audio/${System.currentTimeMillis()}")
+            val ttsProcessor = TtsProcessor(openAIClient, sessionDir, apiKeyManager.getSelectedVoice(), apiKeyManager.getTtsInstructions())
+
+            val ttsMonitorJob = serviceScope.launch {
+                ttsProcessor.progress.collect { progress ->
+                    if (progress.totalChunks > 0 && !progress.isComplete) {
+                        emitProcessingState(
+                            PipelineState.GeneratingAudio(
+                                questionText, answerText, responseId,
+                                progress.completedChunks, progress.totalChunks,
+                                progress.statusMessage,
+                                answerTextRich = answerTextRich
+                            ),
+                            "Audio ${progress.completedChunks}/${progress.totalChunks}: ${progress.statusMessage}"
+                        )
+                    }
+                }
+            }
+
+            val ttsText = if (model == ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH) {
+                SpeechTextCleaner.cleanForSpeech(answerText)
+            } else {
+                answerText
+            }
+
+            try {
+                audioFiles = ttsProcessor.processText(ttsText)
+            } catch (e: Exception) {
+                ttsMonitorJob.cancel()
+                handleError(
+                    e, FailedStep.TTS,
+                    questionText = questionText,
+                    answerText = answerText,
+                    responseId = responseId,
+                    answerTextRich = answerTextRich
+                )
+                return
+            }
             ttsMonitorJob.cancel()
-            handleError(
-                e, FailedStep.TTS,
-                questionText = questionText,
-                answerText = answerText,
-                responseId = responseId,
-                answerTextRich = answerTextRich
-            )
-            return
+        } else {
+            // No OpenAI key — skip TTS, proceed with empty audio
+            audioFiles = emptyList()
         }
-        ttsMonitorJob.cancel()
 
         // Save to database before playback so data isn't lost on cancel
         val earlyConvId = earlyConversationId
@@ -1521,8 +1609,8 @@ class SlothSpeakService : Service() {
 
     private suspend fun runPipelineFromText(
         questionText: String,
-        existingConversationId: Long,
-        previousResponseId: String
+        existingConversationId: Long?,
+        previousResponseId: String?
     ) {
         isPipelineRunning = true
         val model = apiKeyManager.getSelectedModel()
@@ -1541,12 +1629,15 @@ class SlothSpeakService : Service() {
 
         emitProcessingState(PipelineState.Transcribed(questionText))
 
-        // Early DB save for follow-up: insert placeholder QAPair on existing conversation
+        // Early DB save: create conversation if null (mirrors runPipeline pattern)
         try {
+            val actualConvId = existingConversationId ?: withContext(Dispatchers.IO) {
+                database.conversationDao().insertConversation(Conversation())
+            }
             val earlyPairId = withContext(Dispatchers.IO) {
                 database.conversationDao().insertQAPair(
                     QAPair(
-                        conversationId = existingConversationId,
+                        conversationId = actualConvId,
                         questionText = questionText,
                         answerText = "",
                         responseId = "",
@@ -1555,9 +1646,9 @@ class SlothSpeakService : Service() {
                 )
             }
             earlyQaPairId = earlyPairId
-            earlyConversationId = existingConversationId
-            earlyConversationWasNew = false
-            _activeConversationId.value = existingConversationId
+            earlyConversationId = actualConvId
+            earlyConversationWasNew = (existingConversationId == null)
+            _activeConversationId.value = actualConvId
         } catch (e: Exception) {
             Log.w(TAG, "Early DB save failed for follow-up, will fall back to late save", e)
             earlyQaPairId = null
@@ -1615,10 +1706,14 @@ class SlothSpeakService : Service() {
         val llmStartTime = System.currentTimeMillis()
         try {
             if (isClaude) {
-                val history = withContext(Dispatchers.IO) {
-                    database.conversationDao()
-                        .getQAPairsForConversationOnce(existingConversationId)
-                        .map { it.questionText to it.answerText }
+                val history = if (existingConversationId != null) {
+                    withContext(Dispatchers.IO) {
+                        database.conversationDao()
+                            .getQAPairsForConversationOnce(existingConversationId)
+                            .map { it.questionText to it.answerText }
+                    }
+                } else {
+                    emptyList()
                 }
                 val result = claudeClient.generateContent(questionText, history, claudeEffort, webSearchEnabled)
                 timerJob.cancel()
@@ -1628,10 +1723,14 @@ class SlothSpeakService : Service() {
                 lastAnswerTextRich = null
                 responseId = result.responseId
             } else if (isGemini) {
-                val history = withContext(Dispatchers.IO) {
-                    database.conversationDao()
-                        .getQAPairsForConversationOnce(existingConversationId)
-                        .map { it.questionText to it.answerText }
+                val history = if (existingConversationId != null) {
+                    withContext(Dispatchers.IO) {
+                        database.conversationDao()
+                            .getQAPairsForConversationOnce(existingConversationId)
+                            .map { it.questionText to it.answerText }
+                    }
+                } else {
+                    emptyList()
                 }
                 val result = geminiClient.generateContent(questionText, history, thinkingLevel, webSearchEnabled, model)
                 timerJob.cancel()
@@ -1649,10 +1748,14 @@ class SlothSpeakService : Service() {
                 lastAnswerTextRich = result.answerTextRich
                 responseId = result.responseId
             } else if (isCompat && compatProvider != null) {
-                val history = withContext(Dispatchers.IO) {
-                    database.conversationDao()
-                        .getQAPairsForConversationOnce(existingConversationId)
-                        .map { it.questionText to it.answerText }
+                val history = if (existingConversationId != null) {
+                    withContext(Dispatchers.IO) {
+                        database.conversationDao()
+                            .getQAPairsForConversationOnce(existingConversationId)
+                            .map { it.questionText to it.answerText }
+                    }
+                } else {
+                    emptyList()
                 }
                 val result = openAiCompatibleClient.createResponse(
                     question = questionText,
@@ -1688,46 +1791,52 @@ class SlothSpeakService : Service() {
         emitProcessingState(PipelineState.ThinkingComplete(questionText, answerText, responseId, lastAnswerTextRich))
 
         // Step 3: TTS
-        val sessionDir = File(filesDir, "audio/${System.currentTimeMillis()}")
-        val ttsProcessor = TtsProcessor(openAIClient, sessionDir, apiKeyManager.getSelectedVoice(), apiKeyManager.getTtsInstructions())
+        val audioFiles: List<File>
+        if (apiKeyManager.hasKey()) {
+            val sessionDir = File(filesDir, "audio/${System.currentTimeMillis()}")
+            val ttsProcessor = TtsProcessor(openAIClient, sessionDir, apiKeyManager.getSelectedVoice(), apiKeyManager.getTtsInstructions())
 
-        val ttsMonitorJob = serviceScope.launch {
-            ttsProcessor.progress.collect { progress ->
-                if (progress.totalChunks > 0 && !progress.isComplete) {
-                    emitProcessingState(
-                        PipelineState.GeneratingAudio(
-                            questionText, answerText, responseId,
-                            progress.completedChunks, progress.totalChunks,
-                            progress.statusMessage,
-                            answerTextRich = lastAnswerTextRich
-                        ),
-                        "Audio ${progress.completedChunks}/${progress.totalChunks}: ${progress.statusMessage}"
-                    )
+            val ttsMonitorJob = serviceScope.launch {
+                ttsProcessor.progress.collect { progress ->
+                    if (progress.totalChunks > 0 && !progress.isComplete) {
+                        emitProcessingState(
+                            PipelineState.GeneratingAudio(
+                                questionText, answerText, responseId,
+                                progress.completedChunks, progress.totalChunks,
+                                progress.statusMessage,
+                                answerTextRich = lastAnswerTextRich
+                            ),
+                            "Audio ${progress.completedChunks}/${progress.totalChunks}: ${progress.statusMessage}"
+                        )
+                    }
                 }
             }
-        }
 
-        val audioFiles: List<File>
-        try {
-            audioFiles = ttsProcessor.processText(answerText)
-        } catch (e: Exception) {
+            try {
+                audioFiles = ttsProcessor.processText(answerText)
+            } catch (e: Exception) {
+                ttsMonitorJob.cancel()
+                handleError(
+                    e, FailedStep.TTS,
+                    questionText = questionText,
+                    answerText = answerText,
+                    responseId = responseId,
+                    answerTextRich = lastAnswerTextRich
+                )
+                return
+            }
             ttsMonitorJob.cancel()
-            handleError(
-                e, FailedStep.TTS,
-                questionText = questionText,
-                answerText = answerText,
-                responseId = responseId,
-                answerTextRich = lastAnswerTextRich
-            )
-            return
+        } else {
+            // No OpenAI key — skip TTS, proceed with empty audio
+            audioFiles = emptyList()
         }
-        ttsMonitorJob.cancel()
 
         // Step 4: Save to database
+        val earlyConvId = earlyConversationId
         val earlyPairId = earlyQaPairId
-        try {
+        val conversationId = try {
             val audioPathsJson = audioFiles.joinToString(",") { it.absolutePath }
-            if (earlyPairId != null) {
+            if (earlyConvId != null && earlyPairId != null) {
                 database.conversationDao().updateQAPairResult(
                     qaPairId = earlyPairId,
                     answerText = answerText,
@@ -1739,10 +1848,16 @@ class SlothSpeakService : Service() {
                     answerTextRich = lastAnswerTextRich,
                     reasoningText = lastReasoningText
                 )
+                earlyConvId
             } else {
+                val convId = existingConversationId ?: run {
+                    withContext(Dispatchers.IO) {
+                        database.conversationDao().insertConversation(Conversation())
+                    }
+                }
                 database.conversationDao().insertQAPair(
                     QAPair(
-                        conversationId = existingConversationId,
+                        conversationId = convId,
                         questionText = questionText,
                         answerText = answerText,
                         audioFilePaths = audioPathsJson,
@@ -1754,9 +1869,11 @@ class SlothSpeakService : Service() {
                         reasoningText = lastReasoningText
                     )
                 )
+                convId
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to save follow-up to database", e)
+            Log.e(TAG, "Failed to save to database", e)
+            earlyConvId ?: existingConversationId ?: -1L
         }
 
         // DB record is now complete — clear early tracking so cancel/stop won't delete it
@@ -1764,9 +1881,9 @@ class SlothSpeakService : Service() {
         earlyQaPairId = null
         earlyConversationWasNew = false
 
-        // Step 5: Playback (loops back to follow-up listening via launchPipelinePlayback)
+        // Step 5: Playback
         launchPipelinePlayback(
-            questionText, answerText, responseId, existingConversationId,
+            questionText, answerText, responseId, conversationId,
             audioFiles, dbModel, lastReasoningEffort, lastLlmResponseSeconds,
             lastAnswerTextRich,
             reasoningText = lastReasoningText

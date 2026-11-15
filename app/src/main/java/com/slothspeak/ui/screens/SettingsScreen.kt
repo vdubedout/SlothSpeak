@@ -272,6 +272,12 @@ fun SettingsScreen(
                         }
                     }
 
+                    Text(
+                        text = "Used for voice transcription and text-to-speech. Optional — you can chat by text with other providers without it.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
+
                     Spacer(modifier = Modifier.height(24.dp))
 
                     // Gemini API Key Section

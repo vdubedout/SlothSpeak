@@ -13,6 +13,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -30,6 +31,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.AlertDialog
@@ -40,6 +42,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -65,6 +69,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -254,8 +259,8 @@ fun MainScreen(
                 .fillMaxSize()
                 .padding(padding)
         ) {
-            if (!uiState.hasApiKey) {
-                // No API key - prompt to set one
+            if (!uiState.canConverse) {
+                // No usable API key - prompt to set one
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
@@ -270,7 +275,7 @@ fun MainScreen(
                     )
                     Spacer(modifier = Modifier.height(16.dp))
                     Text(
-                        text = "Set your OpenAI API key in Settings to get started.",
+                        text = "Set an API key for any provider — or add an OpenAI-compatible provider — in Settings to get started.",
                         style = MaterialTheme.typography.bodyLarge,
                         color = TextSecondary,
                         textAlign = TextAlign.Center
@@ -389,68 +394,79 @@ fun MainScreen(
                         Spacer(modifier = Modifier.height(8.dp))
                     }
 
-                    // Bottom buttons - hidden during processing
+                    // Bottom section - hidden during processing
                     val isProcessing = currentPipelineState !is SlothSpeakService.PipelineState.Idle &&
                             currentPipelineState !is SlothSpeakService.PipelineState.Complete &&
                             currentPipelineState !is SlothSpeakService.PipelineState.Error &&
                             currentPipelineState !is SlothSpeakService.PipelineState.InteractiveEnding
 
                     if (!isProcessing) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp),
-                            horizontalArrangement = Arrangement.Center
-                        ) {
-                            Button(
-                                onClick = {
-                                    val needsBtPermission = !hasBluetoothPermission && !hasAskedBluetoothPermission
-                                    if (!hasAudioPermission || !hasNotificationPermission || needsBtPermission) {
-                                        val perms = mutableListOf(Manifest.permission.RECORD_AUDIO)
-                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                                            perms.add(Manifest.permission.POST_NOTIFICATIONS)
-                                        }
-                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                                            perms.add(Manifest.permission.BLUETOOTH_CONNECT)
-                                        }
-                                        permissionLauncher.launch(perms.toTypedArray())
-                                    } else {
-                                        viewModel.startNewQuestion()
-                                    }
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = AccentGreen),
-                                modifier = Modifier.weight(1f)
+                        if (uiState.voiceAvailable) {
+                            // Voice mode: show record + follow-up buttons
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(16.dp),
+                                horizontalArrangement = Arrangement.Center
                             ) {
-                                Text("New Question")
-                            }
-
-                            if (currentResponseId != null &&
-                                viewModel.isFollowUpSupported() &&
-                                (currentPipelineState is SlothSpeakService.PipelineState.Complete ||
-                                        currentPipelineState is SlothSpeakService.PipelineState.Idle)
-                            ) {
-                                Spacer(modifier = Modifier.width(12.dp))
-                                OutlinedButton(
+                                Button(
                                     onClick = {
-                                        val needsBtPerm = !hasBluetoothPermission && !hasAskedBluetoothPermission
-                                        if (!hasAudioPermission || needsBtPerm) {
+                                        val needsBtPermission = !hasBluetoothPermission && !hasAskedBluetoothPermission
+                                        if (!hasAudioPermission || !hasNotificationPermission || needsBtPermission) {
                                             val perms = mutableListOf(Manifest.permission.RECORD_AUDIO)
+                                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                                perms.add(Manifest.permission.POST_NOTIFICATIONS)
+                                            }
                                             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                                                 perms.add(Manifest.permission.BLUETOOTH_CONNECT)
                                             }
                                             permissionLauncher.launch(perms.toTypedArray())
                                         } else {
-                                            viewModel.startFollowUp()
+                                            viewModel.startNewQuestion()
                                         }
                                     },
-                                    modifier = Modifier.weight(1f),
-                                    colors = ButtonDefaults.outlinedButtonColors(
-                                        contentColor = AccentGreen
-                                    )
+                                    colors = ButtonDefaults.buttonColors(containerColor = AccentGreen),
+                                    modifier = Modifier.weight(1f)
                                 ) {
-                                    Text("Follow Up")
+                                    Text("New Question")
+                                }
+
+                                if (currentResponseId != null &&
+                                    viewModel.isFollowUpSupported() &&
+                                    (currentPipelineState is SlothSpeakService.PipelineState.Complete ||
+                                            currentPipelineState is SlothSpeakService.PipelineState.Idle)
+                                ) {
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    OutlinedButton(
+                                        onClick = {
+                                            val needsBtPerm = !hasBluetoothPermission && !hasAskedBluetoothPermission
+                                            if (!hasAudioPermission || needsBtPerm) {
+                                                val perms = mutableListOf(Manifest.permission.RECORD_AUDIO)
+                                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                                                    perms.add(Manifest.permission.BLUETOOTH_CONNECT)
+                                                }
+                                                permissionLauncher.launch(perms.toTypedArray())
+                                            } else {
+                                                viewModel.startFollowUp()
+                                            }
+                                        },
+                                        modifier = Modifier.weight(1f),
+                                        colors = ButtonDefaults.outlinedButtonColors(
+                                            contentColor = AccentGreen
+                                        )
+                                    ) {
+                                        Text("Follow Up")
+                                    }
                                 }
                             }
+                        } else {
+                            // Text-only mode: show text input bar
+                            TextInputQuestionBar(
+                                onQuestionSubmit = { viewModel.submitTextQuestion(it) },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(16.dp)
+                            )
                         }
                     }
                 }
@@ -509,5 +525,60 @@ private fun ActivePipelineChip(
             style = MaterialTheme.typography.labelSmall,
             color = AccentGreen
         )
+    }
+}
+
+/**
+ * Text-only question input bar shown when no OpenAI key is present
+ * (voice unavailable but one of the other providers is configured).
+ */
+@Composable
+fun TextInputQuestionBar(
+    onQuestionSubmit: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var text by remember { mutableStateOf("") }
+
+    Column(modifier = modifier) {
+        Text(
+            text = "Voice input needs an OpenAI API key — Settings",
+            style = MaterialTheme.typography.bodySmall,
+            color = TextSecondary
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            OutlinedTextField(
+                value = text,
+                onValueChange = { text = it },
+                placeholder = { Text("Type your question…") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = AccentGreen,
+                    cursorColor = AccentGreen,
+                    focusedLabelColor = AccentGreen
+                ),
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            IconButton(
+                onClick = {
+                    if (text.isNotBlank()) {
+                        onQuestionSubmit(text.trim())
+                        text = ""
+                    }
+                },
+                enabled = text.isNotBlank()
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Filled.Send,
+                    contentDescription = "Send",
+                    tint = if (text.isNotBlank()) AccentGreen else TextSecondary
+                )
+            }
+        }
     }
 }
