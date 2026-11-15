@@ -1,11 +1,17 @@
 package com.slothspeak.audio
 
 import android.content.Context
+import android.os.Bundle
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import com.slothspeak.api.ApiException
 import com.slothspeak.data.ApiKeyManager
 import com.squareup.moshi.Json
 import com.squareup.moshi.Moshi
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withTimeout
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import retrofit2.Retrofit
@@ -135,115 +141,128 @@ class OpenAiCompatibleTtsSynthesizer(
 
 /**
  * On-device TTS synthesizer using Android's android.speech.tts.TextToSpeech.
- * Uses dynamic class loading to avoid compile-time dependency on the API
- * (not available in SDK 34 test harness but present on devices with TTS support).
- * If the API is unavailable at runtime, throws a clean ApiException.
+ * Direct typed API — no reflection. Interfaces with the engine via its native
+ * uttterance-progress listener and Bundle-based parameterization.
+ * Instructions are not applicable (system engine default); voice/model are
+ * managed by the system.
+ *
+ * Lazy-init on first synthesize. A single engine instance is reused.
  */
 class OnDeviceTtsSynthesizer(
     private val context: Context
 ) : TtsSynthesizer {
 
     private val TAG = "OnDeviceTts"
-    private val TTS_CLASS_NAME = "android.speech.tts.TextToSpeech"
-    private val INIT_TIMEOUT_MS = 5000L
+    private val INIT_TIMEOUT_MS = 30_000L
     private val SYNTHESIS_TIMEOUT_MS = 60_000L
 
-    private var engine: java.lang.Object? = null
-    private var ttsClass: Class<*>? = null
-    private var initialized = false
-    private var initFailed = false
-    private var initError: String? = null
+    private var tts: TextToSpeech? = null
+    private val ready = CompletableDeferred<Boolean>()
+    private val pending = mutableMapOf<String, CompletableDeferred<Unit>>()
+    private var initStarted = false
 
-    private suspend fun ensureInitialized() {
-        if (initialized && engine != null) return
-        if (initFailed) {
-            throw ApiException(initError ?: "On-device TTS engine unavailable. Please select a different provider.", 0, false)
-        }
+    private fun ensureEngine() {
+        if (tts != null) return
+        if (initStarted) return
+        initStarted = true
 
-        val cls = try { Class.forName(TTS_CLASS_NAME) } catch (_: ClassNotFoundException) { null }
-        if (cls == null) {
-            initFailed = true
-            initError = "On-device TTS engine not available on this device (${TTS_CLASS_NAME} not found)"
-            Log.w(TAG, initError ?: "unknown")
-            throw ApiException(initError ?: "unknown", 0, false)
-        }
+        tts = TextToSpeech(context) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                Log.i(TAG, "On-device TTS engine initialized (status=$status)")
+                ready.complete(true)
+            } else {
+                val msg = "On-device TTS engine failed to initialize (status=$status)"
+                Log.w(TAG, msg)
+                ready.completeExceptionally(
+                    ApiException(msg, 0, false)
+                )
+            }
+        }.also { engine ->
+            engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                override fun onStart(utteranceId: String?) {
+                    Log.i(TAG, "Synthesis started: $utteranceId")
+                }
 
-        try {
-            val ctor = cls.getConstructor()
-            val eng = ctor.newInstance()
-            ttsClass = cls
-            engine = eng as java.lang.Object
-            initialized = true
-            Log.i(TAG, "On-device TTS engine initialized successfully")
-        } catch (e: Exception) {
-            initFailed = true
-            initError = "On-device TTS engine init failed: ${e.message}"
-            Log.w(TAG, initError, e)
-            throw ApiException(initError!!, 0, false)
+                override fun onDone(utteranceId: String?) {
+                    Log.i(TAG, "Synthesis complete: $utteranceId")
+                    val id = utteranceId ?: return
+                    pending[id]?.complete(Unit)
+                    pending.remove(id)
+                }
+
+                override fun onError(utteranceId: String?) {
+                    val id = utteranceId ?: return
+                    Log.e(TAG, "Synthesis error: $utteranceId")
+                    pending[id]?.completeExceptionally(
+                        ApiException("On-device TTS synthesis failed", 0, false)
+                    )
+                    pending.remove(id)
+                }
+            })
         }
     }
 
     override suspend fun synthesize(text: String, outputFile: File, instructions: String?) {
-        ensureInitialized()
-        val eng = engine ?: throw ApiException("On-device TTS engine not available", 0, false)
-        val cls = ttsClass ?: throw ApiException("On-device TTS engine not initialized", 0, false)
+        ensureEngine()
 
+        // Wait for engine initialization
         try {
-            // Load Bundle class
-            val bundleClass = Class.forName("${TTS_CLASS_NAME}.Bundle")
-            val bundle = bundleClass.getConstructor().newInstance()
-
-            val utteranceId = "utt_${System.identityHashCode(this)}_${System.currentTimeMillis()}"
-            val wavPath = outputFile.absolutePath
-
-            // Set up handler with progress listener via reflection proxy
-            val progressListenerClass = Class.forName("android.speech.tts.UtteranceProgressListener")
-            val handlerClass = Class.forName("${TTS_CLASS_NAME}.Handler")
-            val looperClass = Class.forName("android.os.Looper")
-
-            val listener = java.lang.reflect.Proxy.newProxyInstance(
-                progressListenerClass.getClassLoader(),
-                java.lang.reflect.Array.newInstance(Class::class.java, 1).also {
-                    java.lang.reflect.Array.set(it, 0, progressListenerClass)
-                } as Array<Class<*>>,
-                java.lang.reflect.InvocationHandler { _, method, args ->
-                    when (method.name) {
-                        "onDone" -> Log.i(TAG, "Synthesis complete: $utteranceId")
-                        "onError" -> {
-                            val code = if (args != null && args.size > 1) (args[1] as? Int ?: -1) else -1
-                            Log.e(TAG, "Synthesis error [$utteranceId]: code=$code")
-                        }
-                    }
-                    null
-                }
-            )
-
-            val getMainLooper = looperClass.getMethod("getMainLooper")
-            val mainLooper = getMainLooper.invoke(null)
-            val handlerCtor = handlerClass.getConstructor(looperClass)
-            val handler = handlerCtor.newInstance(mainLooper)
-            handlerClass.getMethod("setListener", String::class.java, progressListenerClass)
-                .invoke(handler, utteranceId, listener)
-            cls.getMethod("setHandler", handlerClass).invoke(eng, handler)
-
-            // Call synthesizeToFile(text, bundle, absolutePath, utteranceId)
-            cls.getMethod("synthesizeToFile",
-                    String::class.java, bundleClass,
-                    String::class.java, String::class.java)
-                .invoke(eng, text, bundle, wavPath, utteranceId)
-
-            if (!outputFile.exists() || outputFile.length() == 0L) {
-                throw ApiException("On-device TTS produced empty audio file", 0, false)
-            }
+            withTimeout(INIT_TIMEOUT_MS) { ready.await() }
+        } catch (e: TimeoutCancellationException) {
+            throw ApiException("On-device TTS engine init timed out", 0, false)
         } catch (e: ApiException) {
             throw e
-        } catch (e: java.lang.reflect.InvocationTargetException) {
-            val cause = e.cause
-            if (cause is ApiException) throw cause as ApiException
-            throw ApiException("On-device TTS synthesis failed: ${cause?.message ?: e.message}", 0, false)
-        } catch (e: Exception) {
-            throw ApiException("On-device TTS synthesis failed: ${e.message}", 0, false)
         }
+
+        val engine = tts ?: throw ApiException("On-device TTS engine unavailable", 0, false)
+
+        // Check language availability
+        val langStatus = engine.isLanguageAvailable(java.util.Locale.getDefault())
+        if (langStatus == TextToSpeech.LANG_MISSING_DATA ||
+            langStatus == TextToSpeech.LANG_NOT_SUPPORTED) {
+            throw ApiException(
+                "On-device TTS has no voice data for the device language (status=$langStatus)",
+                0, false
+            )
+        }
+
+        // Build params bundle (default rate)
+        val params = Bundle()
+
+        val utteranceId = "slothspeak_${System.nanoTime()}"
+        val done = CompletableDeferred<Unit>().also { pending[utteranceId] = it }
+
+        val result = engine.synthesizeToFile(text, params, outputFile, utteranceId)
+        if (result != TextToSpeech.SUCCESS) {
+            pending.remove(utteranceId)
+            throw ApiException("On-device TTS request rejected (code=$result)", 0, false)
+        }
+
+        try {
+            withTimeout(SYNTHESIS_TIMEOUT_MS) { done.await() }
+        } catch (e: TimeoutCancellationException) {
+            pending.remove(utteranceId)
+            engine.stop()
+            throw ApiException("On-device TTS synthesis timed out", 0, false)
+        }
+
+        if (!outputFile.exists() || outputFile.length() == 0L) {
+            throw ApiException("On-device TTS produced empty audio file", 0, false)
+        }
+    }
+
+    fun shutdown() {
+        tts?.stop()
+        tts = null
+        // Cancel any pending utterances
+        for ((id, deferred) in pending) {
+            if (!deferred.isCompleted) {
+                deferred.completeExceptionally(
+                    ApiException("On-device TTS was shut down", 0, false)
+                )
+            }
+        }
+        pending.clear()
     }
 }
 
