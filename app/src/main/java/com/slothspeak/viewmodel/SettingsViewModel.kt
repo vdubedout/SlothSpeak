@@ -443,12 +443,6 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         _state.value = _state.value.copy(hasSttApiKey = true, sttKeySaved = true)
     }
 
-    fun showDeleteSttApiKeyDialog() {
-        // Reuse delete-key pattern inline: delete key and refresh
-        apiKeyManager.deleteSttApiKey()
-        _state.value = _state.value.copy(hasSttApiKey = false, sttKeySaved = false)
-    }
-
     fun deleteSttApiKey() {
         apiKeyManager.deleteSttApiKey()
         _state.value = _state.value.copy(hasSttApiKey = false, sttKeySaved = false)
