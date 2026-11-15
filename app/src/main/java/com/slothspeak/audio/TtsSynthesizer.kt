@@ -8,10 +8,13 @@ import android.util.Log
 import com.slothspeak.api.ApiException
 import com.slothspeak.data.ApiKeyManager
 import com.squareup.moshi.Json
+import com.squareup.moshi.JsonClass
 import com.squareup.moshi.Moshi
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import retrofit2.Retrofit
@@ -158,13 +161,11 @@ class OnDeviceTtsSynthesizer(
 
     private var tts: TextToSpeech? = null
     private val ready = CompletableDeferred<Boolean>()
-    private val pending = mutableMapOf<String, CompletableDeferred<Unit>>()
-    private var initStarted = false
+    private val pending = java.util.concurrent.ConcurrentHashMap<String, CompletableDeferred<Unit>>()
+    private val initLock = Semaphore(1)
 
-    private fun ensureEngine() {
-        if (tts != null) return
-        if (initStarted) return
-        initStarted = true
+    private suspend fun ensureEngine() = initLock.withPermit {
+        if (tts != null) return@withPermit
 
         tts = TextToSpeech(context) { status ->
             if (status == TextToSpeech.SUCCESS) {
@@ -186,14 +187,14 @@ class OnDeviceTtsSynthesizer(
                 override fun onDone(utteranceId: String?) {
                     Log.i(TAG, "Synthesis complete: $utteranceId")
                     val id = utteranceId ?: return
-                    pending[id]?.complete(Unit)
+                    pending.get(id)?.complete(Unit)
                     pending.remove(id)
                 }
 
                 override fun onError(utteranceId: String?) {
                     val id = utteranceId ?: return
                     Log.e(TAG, "Synthesis error: $utteranceId")
-                    pending[id]?.completeExceptionally(
+                    pending.get(id)?.completeExceptionally(
                         ApiException("On-device TTS synthesis failed", 0, false)
                     )
                     pending.remove(id)
@@ -230,7 +231,7 @@ class OnDeviceTtsSynthesizer(
         val params = Bundle()
 
         val utteranceId = "slothspeak_${System.nanoTime()}"
-        val done = CompletableDeferred<Unit>().also { pending[utteranceId] = it }
+        val done = CompletableDeferred<Unit>().also { pending.put(utteranceId, it) }
 
         val result = engine.synthesizeToFile(text, params, outputFile, utteranceId)
         if (result != TextToSpeech.SUCCESS) {
@@ -255,7 +256,7 @@ class OnDeviceTtsSynthesizer(
         tts?.stop()
         tts = null
         // Cancel any pending utterances
-        for ((id, deferred) in pending) {
+        for ((id, deferred) in pending.entries) {
             if (!deferred.isCompleted) {
                 deferred.completeExceptionally(
                     ApiException("On-device TTS was shut down", 0, false)
@@ -268,6 +269,7 @@ class OnDeviceTtsSynthesizer(
 
 // ---- Request / Service types ----
 
+@JsonClass(generateAdapter = true)
 data class TtsRequestBody(
     val model: String,
     val input: String,

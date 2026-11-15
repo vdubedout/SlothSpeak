@@ -81,6 +81,7 @@ class SlothSpeakService : Service() {
     private var playbackWakeLock: PowerManager.WakeLock? = null
     private var vadRecorder: VadAudioRecorder? = null
     private var followUpJob: Job? = null
+    private var onDeviceTtsSynthesizer: OnDeviceTtsSynthesizer? = null
 
     private lateinit var apiKeyManager: ApiKeyManager
     private lateinit var openAIClient: OpenAIClient
@@ -296,8 +297,14 @@ class SlothSpeakService : Service() {
     private fun createTtsSynthesizer(): TtsSynthesizer {
         val config = apiKeyManager.getEffectiveTtsConfig()
         return when (config.provider) {
-            ApiKeyManager.TTS_PROVIDER_ONDEVICE ->
-                OnDeviceTtsSynthesizer(applicationContext)
+            ApiKeyManager.TTS_PROVIDER_ONDEVICE -> {
+                var engine = onDeviceTtsSynthesizer
+                if (engine == null) {
+                    engine = OnDeviceTtsSynthesizer(applicationContext)
+                    onDeviceTtsSynthesizer = engine
+                }
+                engine
+            }
             else ->
                 OpenAiCompatibleTtsSynthesizer(config)
         }
@@ -778,7 +785,7 @@ class SlothSpeakService : Service() {
             }
             ttsMonitorJob.cancel()
         } else {
-            // No OpenAI key — skip TTS, proceed with empty audio
+            // No TTS configured — skip synthesis, proceed with empty audio
             audioFiles = emptyList()
         }
 
@@ -1364,7 +1371,7 @@ class SlothSpeakService : Service() {
             }
             ttsMonitorJob.cancel()
         } else {
-            // No OpenAI key — skip TTS, proceed with empty audio
+            // No TTS configured — skip synthesis, proceed with empty audio
             audioFiles = emptyList()
         }
 

@@ -3,7 +3,6 @@ package com.slothspeak.data
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
@@ -18,25 +17,37 @@ import org.robolectric.annotation.Config
 class TtsConfigDataTest {
 
     @Test
-    fun defaultProviderIsOpenai() {
-        assertEquals("openai", ApiKeyManager.TTS_PROVIDER_OPENAI)
-    }
-
-    @Test
-    fun openaiPreset_resolves_openaiBase_andDefaultModelAndVoice() {
+    fun openaiPreset_uses_selectedVoice_over_ttsVoice() {
+        // selectedVoice (the 13-voice picker) must take precedence
         val config = ApiKeyManager.resolveTtsConfig(
             providerId = ApiKeyManager.TTS_PROVIDER_OPENAI,
             openaiApiKey = "sk-openai-abc123",
             togetherApiKey = null,
             customApiKey = null,
             ttsModel = ApiKeyManager.DEFAULT_TTS_MODEL_OPENAI,
-            ttsVoice = ApiKeyManager.DEFAULT_TTS_VOICE_OPENAI,
-            ttsBaseUrl = ""
+            ttsVoice = "marin",
+            ttsBaseUrl = "",
+            selectedVoice = "nova"
         )
         assertEquals("openai", config.provider)
         assertEquals("https://api.openai.com/v1/", config.baseUrl)
         assertEquals("sk-openai-abc123", config.apiKey)
         assertEquals("gpt-4o-mini-tts", config.model)
+        assertEquals("nova", config.voice)  // from selectedVoice, not ttsVoice
+    }
+
+    @Test
+    fun openaiPreset_withoutSelectedVoice_fallsBackTo_ttsVoice() {
+        val config = ApiKeyManager.resolveTtsConfig(
+            providerId = ApiKeyManager.TTS_PROVIDER_OPENAI,
+            openaiApiKey = "sk-openai-abc123",
+            togetherApiKey = null,
+            customApiKey = null,
+            ttsModel = ApiKeyManager.DEFAULT_TTS_MODEL_OPENAI,
+            ttsVoice = "marin",
+            ttsBaseUrl = ""
+            // selectedVoice not passed → null
+        )
         assertEquals("marin", config.voice)
     }
 
@@ -91,6 +102,21 @@ class TtsConfigDataTest {
     }
 
     @Test
+    fun customPreset_normalizesBaseUrl_trailingSlash() {
+        // Pass a slashless URL; resolver adds the trailing slash
+        val config = ApiKeyManager.resolveTtsConfig(
+            providerId = ApiKeyManager.TTS_PROVIDER_CUSTOM,
+            openaiApiKey = null,
+            togetherApiKey = null,
+            customApiKey = null,
+            ttsModel = "m",
+            ttsVoice = "v",
+            ttsBaseUrl = "http://192.168.1.100:8000/v1"  // no trailing slash
+        )
+        assertEquals("http://192.168.1.100:8000/v1/", config.baseUrl)
+    }
+
+    @Test
     fun ondevicePreset_resolves_noKey_noBaseUrl() {
         val config = ApiKeyManager.resolveTtsConfig(
             providerId = ApiKeyManager.TTS_PROVIDER_ONDEVICE,
@@ -106,13 +132,6 @@ class TtsConfigDataTest {
         assertNull(config.apiKey)
         assertEquals("", config.model)
         assertEquals("", config.voice)
-    }
-
-    @Test
-    fun customPreset_normalizesBaseUrl_trailingSlash() {
-        val raw = "http://192.168.1.100:8000/v1"
-        val normalized = if (raw.endsWith("/")) raw else "$raw/"
-        assertEquals("http://192.168.1.100:8000/v1/", normalized)
     }
 
     @Test

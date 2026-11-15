@@ -372,7 +372,8 @@ class ApiKeyManager(context: Context) {
             customApiKey = getTtsCustomApiKey(),
             ttsModel = getTtsModel(),
             ttsVoice = getTtsVoice(),
-            ttsBaseUrl = getTtsBaseUrl()
+            ttsBaseUrl = getTtsBaseUrl(),
+            selectedVoice = getSelectedVoice()
         )
     }
 
@@ -487,7 +488,8 @@ class ApiKeyManager(context: Context) {
             customApiKey: String?,
             ttsModel: String,
             ttsVoice: String,
-            ttsBaseUrl: String
+            ttsBaseUrl: String,
+            selectedVoice: String? = null
         ): TtsConfig {
             return when (providerId) {
                 TTS_PROVIDER_OPENAI -> TtsConfig(
@@ -495,7 +497,7 @@ class ApiKeyManager(context: Context) {
                     baseUrl = OPENAI_BASE_URL,
                     apiKey = openaiApiKey,
                     model = ttsModel.ifBlank { DEFAULT_TTS_MODEL_OPENAI },
-                    voice = ttsVoice.ifBlank { DEFAULT_TTS_VOICE_OPENAI }
+                    voice = selectedVoice?.takeIf { it.isNotBlank() } ?: ttsVoice.ifBlank { DEFAULT_TTS_VOICE_OPENAI }
                 )
                 TTS_PROVIDER_TOGETHER -> TtsConfig(
                     provider = TTS_PROVIDER_TOGETHER,
@@ -523,7 +525,7 @@ class ApiKeyManager(context: Context) {
                     baseUrl = OPENAI_BASE_URL,
                     apiKey = openaiApiKey,
                     model = ttsModel.ifBlank { DEFAULT_TTS_MODEL_OPENAI },
-                    voice = ttsVoice.ifBlank { DEFAULT_TTS_VOICE_OPENAI }
+                    voice = selectedVoice?.takeIf { it.isNotBlank() } ?: ttsVoice.ifBlank { DEFAULT_TTS_VOICE_OPENAI }
                 )
             }
         }

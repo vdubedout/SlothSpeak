@@ -2968,6 +2968,12 @@ fun TtsSection(
                         style = MaterialTheme.typography.bodySmall,
                         color = TextSecondary
                     )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Voice is chosen with the OpenAI voice picker below.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
                 }
             }
         }
