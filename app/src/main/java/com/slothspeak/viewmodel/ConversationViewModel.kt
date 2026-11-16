@@ -165,10 +165,14 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         )
         checkStorage()
         reconnectToActiveService()
-        // Arm wake word detection after first frame renders (one-shot)
+        // Arm wake word detection after first frame renders (one-shot).
+        // Guards: only arm if the service is NOT currently being bound
+        // (otherwise the service-connected handler would re-arm).
         viewModelScope.launch {
-            delay(500) // brief delay so the pipeline/UI is settled
-            maybeStartWakeWordDetection()
+            delay(500)
+            if (!serviceBound && !_isPipelineRunning.value) {
+                maybeStartWakeWordDetection()
+            }
         }
     }
 
@@ -221,9 +225,18 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
      *
      * The detector runs while no pipeline/recording/playback is active.
      */
+    /**
+     * Try to start the wake word detector.
+     * Clears the session-disable flag when the toggle is on, so that returning
+     * from Settings after toggling off→on triggers a fresh init attempt.
+     */
     fun maybeStartWakeWordDetection() {
         if (!apiKeyManager.getWakeWordEnabled()) return
-        if (wakeWordDisabledForSession) return
+        // Clear the session-disable flag when the toggle is on — the user
+        // may have toggled off→on since the failure, requesting a fresh attempt.
+        if (wakeWordDisabledForSession) {
+            wakeWordDisabledForSession = false
+        }
         if (_isPipelineRunning.value) return
         if (wakeWordDetector?.isRunning == true) return
 
@@ -247,23 +260,30 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         }
 
         Log.i(TAG, "Starting wake word detector")
-        wakeWordDetector = WakeWordDetector(
-            context = getApplication(),
-            melSpectrogramPath = melPath,
-            embeddingModelPath = embPath,
-            wakeWordModelPath = wwPath,
-            onDetected = {
-                Log.i(TAG, "Wake word 'Hey Jarvis' detected!")
-                stopWakeWordDetection()
-                val svc = service
-                if (svc != null && serviceBound) {
-                    svc.triggerWakeWordDetected()
-                } else {
-                    startNewQuestion()
+        // Model extraction and ONNX init happen on IO dispatcher
+        viewModelScope.launch(Dispatchers.IO) {
+            val detector = WakeWordDetector(
+                context = getApplication(),
+                melSpectrogramPath = melPath,
+                embeddingModelPath = embPath,
+                wakeWordModelPath = wwPath,
+                onDetected = {
+                    Log.i(TAG, "Wake word 'Hey Jarvis' detected!")
+                    stopWakeWordDetection()
+                    val svc = service
+                    if (svc != null && serviceBound) {
+                        svc.triggerWakeWordDetected()
+                    } else {
+                        startNewQuestion()
+                    }
                 }
+            )
+            detector.start()
+            // Store the detector ref AFTER start() completes init
+            withContext(Dispatchers.Main) {
+                wakeWordDetector = detector
             }
-        )
-        wakeWordDetector!!.start()
+        }
     }
 
     /**
@@ -289,8 +309,11 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
      * Extracts a wake word ONNX model from the APK bundle to the app's cache
      * directory on first run. Subsequent calls return the cached path.
      *
+     * Uses atomic write: writes to `<name>.tmp` then renames to `<name>` so a
+     * killed process never leaves a corrupt cached model.
+     *
      * Uses android.content.Context.assets.open(...) which reads from the APK's
-     * bundled asset resources (app/src/main/assets/wakeword/ at build time).
+     * bundled asset resources under `assets/wakeword/`.
      */
     private fun ensureWakewordModel(modelName: String): String? {
         val cacheDir = File(getApplication<Application>().filesDir, "wakeword")
@@ -302,11 +325,12 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
             return cachedFile.absolutePath
         }
 
-        // Extract from APK bundled assets via context.assets.open()
+        // Atomic write: .tmp then rename
+        val tmpFile = File(cacheDir, "${modelName}.tmp")
         try {
             val app = getApplication<Application>()
             app.assets.open("wakeword/$modelName").use { input ->
-                FileOutputStream(cachedFile).use { output ->
+                FileOutputStream(tmpFile).use { output ->
                     val buf = ByteArray(8192)
                     while (true) {
                         val n = input.read(buf)
@@ -315,13 +339,20 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
                     }
                 }
             }
-            Log.i(TAG, "Extracted wake word model: $modelName from APK assets")
-            if (cachedFile.exists() && cachedFile.length() > 0) {
-                return cachedFile.absolutePath
+            // Rename to final path (atomic on same filesystem)
+            if (tmpFile.exists() && tmpFile.length() > 0) {
+                tmpFile.renameTo(cachedFile)
+                Log.i(TAG, "Extracted wake word model: $modelName from APK assets")
+                if (cachedFile.exists() && cachedFile.length() > 0) {
+                    return cachedFile.absolutePath
+                }
             }
         } catch (e: Exception) {
             Log.w(TAG, "Failed to extract model $modelName from APK assets", e)
             wakeWordDisabledForSession = true
+        } finally {
+            // Clean up any leftover tmp file
+            try { if (tmpFile.exists()) tmpFile.delete() } catch (_: Exception) {}
         }
 
         return null

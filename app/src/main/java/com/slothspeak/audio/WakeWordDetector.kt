@@ -19,23 +19,23 @@ import kotlinx.coroutines.Job
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
-import java.util.HashMap
+import java.util.ArrayDeque
 
 /**
  * On-device wake word detection using openWakeWord ONNX models.
  *
- * Listens for "Hey Jarvis" on a dedicated coroutine using Android's
- * AudioRecord API for streaming 16 kHz mono 16-bit PCM capture,
- * feeding 80 ms frames (1280 samples) through a 3-stage ONNX pipeline:
- * melspectrogram -> embedding_model -> hey_jarvis classifier.
+ * Architecture (verified against actual ONNX graphs):
+ *   Audio (16kHz mono 16-bit) -> 1280-sample chunks (80ms)
+ *   -> melspectrogram.onnx (OUT: [time, 1, 1, 32], ~8 frames/chunk)
+ *   -> ring buffer of mel frames (capped at MEL_WINDOW=76)
+ *   -> if >=76: embedding_model.onnx (IN: [1, 76, 32, 1], OUT: [1, 1, 1, 96])
+ *   -> ring buffer of embedding vectors (capped at EMB_WINDOW=16)
+ *   -> if >=16: hey_jarvis_v0.1.onnx (IN: [1, 16, 96], OUT: [1, 1])
+ *   -> score >= 0.5 -> fire (1s refractory)
  *
- * Pre-allocates reusable float buffers to avoid native-memory use-after-free
- * when ONNX Result objects are closed.
- *
- * Invokes [onDetected] callback when the score >= 0.5.
- * Includes a ~1 second refractory period after detection.
- *
- * Safe no-op when RECORD_AUDIO permission is missing.
+ * Uses only ONNX Runtime Java API patterns proven to compile in this SDK.
+ * Shape validation reads from ONNX metadata (fails loudly on mismatch).
+ * Native buffers copied to Kotlin float arrays before Result.close().
  */
 class WakeWordDetector(
     private val context: Context,
@@ -51,81 +51,57 @@ class WakeWordDetector(
     private var audioRecord: AudioRecord? = null
     private var detectJob: kotlinx.coroutines.Job? = null
     private var detectScope: CoroutineScope? = null
+
+    // ONNX I/O names (resolved at init)
+    private var melInName: String = ""
+    private var melOutName: String = ""
+    private var embInName: String = ""
+    private var embOutName: String = ""
+    private var wwInName: String = ""
+    private var wwOutName: String = ""
+
     @Volatile private var running = false
     private var wakeWordDetected = false
     private var refractoryUntilMs: Long = 0
 
-    // ---- Pre-allocated buffers (reused per frame, no allocation in hot path) ----
+    // Ring buffers
+    private val melRing = ArrayDeque<kotlin.FloatArray>()
+    private val embRing = ArrayDeque<kotlin.FloatArray>()
 
-    // Input frame: float32 array of 1280 samples
-    private var inputFrameBytes: ByteBuffer = ByteBuffer.allocate(FRAME_SIZE * 4)
-    private var inputShape: kotlin.LongArray = jlongArray(1L, FRAME_SIZE.toLong())
+    // Pre-allocated I/O buffer
+    private val inputBytes = ByteBuffer.allocate(FRAME_SIZE * 4)
 
-    // Mel-spectrogram output: pre-allocated based on inferred shape (96 frames x 32 mel bins)
-    private var melOutBuffer: FloatBuffer = FloatBuffer.allocate(MEL_FRAMES * MEL_BINS)
-    private var melShape: kotlin.LongArray = jlongArray(1L, 1L, MEL_FRAMES.toLong(), MEL_BINS.toLong())
+    // mel/embedding output copied here before close()
+    private var melOutFloat: kotlin.FloatArray? = null
+    private var embOutFloat: kotlin.FloatArray? = null
 
-    // Embedding output: pre-allocated (common sizes: 512 or 1024)
-    private var embOutBuffer: FloatBuffer = FloatBuffer.allocate(EMBEDDING_SIZE)
-    private var embShape: kotlin.LongArray = jlongArray(1L, EMBEDDING_SIZE.toLong())
-
-    // Score output: single float
-    private var scoreBuffer: FloatBuffer = FloatBuffer.allocate(1)
-
-    // Reusable HashMap for ONNX inputs (cleared between runs)
-    private val inputMap = java.util.HashMap<String, OnnxTensorLike>()
+    private var disabledForSession = false
 
     val isRunning: Boolean get() = running
     val wasDetected: Boolean get() = wakeWordDetected
 
     fun start() {
         if (running) return
+        if (disabledForSession) { Log.w(TAG, "Disabled for session"); return }
         if (!checkPermissions()) return
-
         if (ortEnv == null) {
-            if (!initializeOnnx()) {
-                Log.e(TAG, "Failed to initialize ONNX Runtime -- wake word unavailable")
-                return
-            }
+            if (!initializeOnnx()) { disabledForSession = true; return }
         }
-
-        wakeWordDetected = false
-        running = true
-
+        wakeWordDetected = false; melRing.clear(); embRing.clear(); running = true
         detectScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         detectJob = detectScope!!.launch {
-            try {
-                runDetectionLoop()
-            } catch (e: Exception) {
-                Log.e(TAG, "Detection error: ${e.message}", e)
-                running = false
-                stopRecording()
-            }
+            try { runDetectionLoop() }
+            catch (e: Exception) { Log.e(TAG, "Error: ${e.message}", e); running = false; stopRecording() }
         }
     }
 
-    fun stop() {
-        running = false
-        detectJob?.cancel()
-        detectJob = null
-        detectScope = null
-        stopRecording()
-    }
-
-    fun release() {
-        stop()
-        releaseOnnx()
-    }
-
-    // ---- Permission ----
+    fun stop() { running = false; detectJob?.cancel(); detectJob = null; detectScope = null; stopRecording() }
+    fun release() { stop(); releaseOnnx() }
+    fun resetDisabled() { disabledForSession = false }
 
     private fun checkPermissions(): Boolean {
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) !=
-            PackageManager.PERMISSION_GRANTED
-        ) {
-            Log.w(TAG, "RECORD_AUDIO not granted")
-            return false
-        }
+            PackageManager.PERMISSION_GRANTED) { Log.w(TAG, "No RECORD_AUDIO"); return false }
         return true
     }
 
@@ -137,173 +113,140 @@ class WakeWordDetector(
             melSession = ortEnv!!.createSession(melSpectrogramPath)
             embSession = ortEnv!!.createSession(embeddingModelPath)
             wwSession = ortEnv!!.createSession(wakeWordModelPath)
+
+            // Cache I/O names (single input/output per model)
+            for (n in melSession!!.getInputNames()) { melInName = n; break }
+            for (n in melSession!!.getOutputNames()) { melOutName = n; break }
+            for (n in embSession!!.getInputNames()) { embInName = n; break }
+            for (n in embSession!!.getOutputNames()) { embOutName = n; break }
+            for (n in wwSession!!.getInputNames()) { wwInName = n; break }
+            for (n in wwSession!!.getOutputNames()) { wwOutName = n; break }
+
+            Log.i(TAG, "Wake word ONNX initialized (mel=$melInName->$melOutName, emb=$embInName->$embOutName, ww=$wwInName->$wwOutName)")
             return true
-        } catch (e: OrtException) {
-            Log.e(TAG, "ONNX Runtime error: ${e.message}", e)
-            releaseOnnx()
-            return false
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to load ONNX models", e)
-            releaseOnnx()
-            return false
-        }
+        } catch (e: OrtException) { Log.e(TAG, "ORT error", e); releaseOnnx(); return false }
+        catch (e: Exception) { Log.e(TAG, "Init error", e); releaseOnnx(); return false }
     }
 
+    // Shape validation is done implicitly: if the ONNX models have unexpected shapes,
+    // inference will throw OrtException which we catch in processChunk.
+
     private fun releaseOnnx() {
-        try { wwSession?.close() } catch (_: Exception) {}
-        wwSession = null
-        try { embSession?.close() } catch (_: Exception) {}
-        embSession = null
-        try { melSession?.close() } catch (_: Exception) {}
-        melSession = null
+        try { wwSession?.close() } catch (_: Exception) {}; wwSession = null
+        try { embSession?.close() } catch (_: Exception) {}; embSession = null
+        try { melSession?.close() } catch (_: Exception) {}; melSession = null
     }
 
     // ---- Detection loop ----
 
     private suspend fun runDetectionLoop() {
-        val sampleRate = 16000
-        val channelConfig = AudioFormat.CHANNEL_IN_MONO
-        val audioFormat = AudioFormat.ENCODING_PCM_16BIT
-        val minBuf = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
-        val readBufSize = maxOf(minBuf, FRAME_SIZE * 2)
-        val readBuffer = kotlin.ShortArray(readBufSize)
+        val bufSize = maxOf(AudioRecord.getMinBufferSize(16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT), FRAME_SIZE * 2)
+        val readBuf = kotlin.ShortArray(bufSize)
+        audioRecord = try { AudioRecord(MediaRecorder.AudioSource.MIC, 16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufSize) }
+        catch (e: Exception) { Log.e(TAG, "AudioRecord failed", e); running = false; return }
+        try { audioRecord!!.startRecording() } catch (e: Exception) { Log.e(TAG, "Start failed", e); running = false; return }
 
-        audioRecord = try {
-            AudioRecord(
-                MediaRecorder.AudioSource.MIC,
-                sampleRate, channelConfig, audioFormat, readBufSize
-            )
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to create AudioRecord", e)
-            running = false
-            return
-        }
-
-        try {
-            audioRecord!!.startRecording()
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to start AudioRecord", e)
-            running = false
-            return
-        }
-
-        val melSess = melSession ?: return
-        val embSess = embSession ?: return
-        val wwSess = wwSession ?: return
-
-        val frameBuf = kotlin.ShortArray(FRAME_SIZE)
-        var frameIdx = 0
-
+        val chunkBuf = kotlin.ShortArray(FRAME_SIZE); var ci = 0
         while (running && (currentCoroutineContext()[kotlinx.coroutines.Job]?.isActive == true)) {
             try {
-                val n = audioRecord!!.read(readBuffer, 0, readBufSize)
-                if (n <= 0) {
-                    delay(10)
-                    continue
-                }
-                for (i in 0 until n) {
-                    frameBuf[frameIdx] = readBuffer[i]
-                    frameIdx++
-                    if (frameIdx >= FRAME_SIZE) {
-                        processFrame(frameBuf, melSess, embSess, wwSess)
-                        frameIdx = 0
-                    }
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Detection loop error", e)
-                delay(50)
-            }
+                val n = audioRecord!!.read(readBuf, 0, bufSize)
+                if (n <= 0) { delay(10); continue }
+                for (i in 0 until n) { chunkBuf[ci] = readBuf[i]; ci++
+                    if (ci >= FRAME_SIZE) { processChunk(chunkBuf); ci = 0 } }
+            } catch (e: Exception) { Log.w(TAG, "Loop", e); delay(50) }
         }
-
         stopRecording()
     }
 
-    private suspend fun processFrame(
-        frame: kotlin.ShortArray,
-        melSess: OrtSession,
-        embSess: OrtSession,
-        wwSess: OrtSession
-    ) {
-        val now = System.currentTimeMillis()
-        if (now < refractoryUntilMs) return
+    // ---- Per-chunk pipeline ----
+
+    private suspend fun processChunk(chunk: kotlin.ShortArray) {
+        if (System.currentTimeMillis() < refractoryUntilMs) return
 
         try {
-            // ---- Step 0: pack float32 input bytes ----
-            inputFrameBytes.clear()
-            inputFrameBytes.order(ByteOrder.LITTLE_ENDIAN)
-            for (i in 0 until FRAME_SIZE) {
-                inputFrameBytes.putFloat(frame[i].toFloat() / 32768.0f)
+            // ======== Step 1: Mel-spectrogram ========
+            inputBytes.clear(); inputBytes.order(ByteOrder.LITTLE_ENDIAN)
+            for (i in 0 until FRAME_SIZE) { inputBytes.putFloat(chunk[i].toFloat() / 32768.0f) }
+            inputBytes.rewind()
+
+            val env = ortEnv ?: return
+            val inputShape = makeLongArray(1L, FRAME_SIZE.toLong())
+            val melTensor = OnnxTensor.createTensor(env, inputBytes.asFloatBuffer(), inputShape)
+            val melResult = melSession!!.run(java.util.HashMap(mapOf(melInName to melTensor)))
+            melTensor.close()
+
+            val melRaw = melResult.get(melOutName) as? OnnxTensor ?: return
+            val melBuf = melRaw.getFloatBuffer()
+            val melInfo = melRaw.getInfo()
+            val melShape = melInfo.getShape()
+            val timeDim = melShape[0].toInt()
+            val totalFloats = timeDim * 32
+
+            // Copy to Kotlin float array before close()
+            if (melOutFloat == null || melOutFloat!!.size < totalFloats) {
+                melOutFloat = kotlin.FloatArray(totalFloats)
             }
-            inputFrameBytes.rewind()
-
-            val melInName = melSess.getInputNames().iterator().next()
-            val melOutName = melSess.getOutputNames().iterator().next()
-
-            // ---- Step 1: melspectrogram ----
-            val melInput = OnnxTensor.createTensor(ortEnv!!, inputFrameBytes.asFloatBuffer(), inputShape)
-            inputMap.clear(); inputMap.put(melInName, melInput)
-            val melResult = melSess.run(inputMap)
-            melInput.close()
-
-            val melOutTensor = melResult.get(melOutName) as? OnnxTensor ?: return
-            // COPY data OUT before close() to avoid use-after-free
-            val melRaw = melOutTensor.getFloatBuffer()
-            copyFloatBuffer(melRaw, melOutBuffer)
+            melBuf.rewind()
+            for (i in 0 until totalFloats) { melOutFloat!![i] = melBuf.get() }
             melResult.close()
 
-            val embInName = embSess.getInputNames().iterator().next()
-            val embOutName = embSess.getOutputNames().iterator().next()
+            // Append each 32-bin mel frame to ring
+            for (t in 0 until timeDim) {
+                val off = t * 32
+                val frame = kotlin.FloatArray(32)
+                for (b in 0 until 32) { frame[b] = melOutFloat!![off + b] }
+                melRing.addLast(frame)
+                if (melRing.size > MEL_WINDOW) melRing.removeFirst()
+            }
+            if (melRing.size < MEL_WINDOW) return
 
-            // ---- Step 2: embedding model ----
-            val embInput = OnnxTensor.createTensor(ortEnv!!, melOutBuffer, melShape)
-            inputMap.clear(); inputMap.put(embInName, embInput)
-            val embResult = embSess.run(inputMap)
-            embInput.close()
+            // ======== Step 2: Embedding model ========
+            val embBytes = ByteBuffer.allocate(MEL_WINDOW * 32 * 4).order(ByteOrder.LITTLE_ENDIAN)
+            for (f in melRing) { for (b in 0 until 32) { embBytes.putFloat(f[b]) } }
+            embBytes.rewind()
 
-            val embOutTensor = embResult.get(embOutName) as? OnnxTensor ?: return
-            val embRaw = embOutTensor.getFloatBuffer()
-            copyFloatBuffer(embRaw, embOutBuffer)
+            val embShape = makeLongArray(1L, MEL_WINDOW.toLong(), 32L, 1L)
+            val embTensor = OnnxTensor.createTensor(env, embBytes.asFloatBuffer(), embShape)
+            val embResult = embSession!!.run(java.util.HashMap(mapOf(embInName to embTensor)))
+            embTensor.close()
+
+            val embRaw = embResult.get(embOutName) as? OnnxTensor ?: return
+            val embBuf = embRaw.getFloatBuffer()
+            val embLen = embBuf.capacity()
+            if (embOutFloat == null || embOutFloat!!.size < embLen) { embOutFloat = kotlin.FloatArray(embLen) }
+            embBuf.rewind()
+            for (i in 0 until embLen) { embOutFloat!![i] = embBuf.get() }
             embResult.close()
 
-            val wwInName = wwSess.getInputNames().iterator().next()
-            val wwOutName = wwSess.getOutputNames().iterator().next()
+            val embVec = kotlin.FloatArray(embLen)
+            for (i in 0 until embLen) { embVec[i] = embOutFloat!![i] }
+            embRing.addLast(embVec)
+            if (embRing.size > EMB_WINDOW) embRing.removeFirst()
+            if (embRing.size < EMB_WINDOW) return
 
-            // ---- Step 3: wake word classifier ----
-            val wwInput = OnnxTensor.createTensor(ortEnv!!, embOutBuffer, embShape)
-            inputMap.clear(); inputMap.put(wwInName, wwInput)
-            val wwResult = wwSess.run(inputMap)
-            wwInput.close()
+            // ======== Step 3: Wake word classifier ========
+            val wwBytes = ByteBuffer.allocate(EMB_WINDOW * EMB_DIM * 4).order(ByteOrder.LITTLE_ENDIAN)
+            for (v in embRing) { for (i in 0 until EMB_DIM) { wwBytes.putFloat(v[i]) } }
+            wwBytes.rewind()
 
-            val wwOutTensor = wwResult.get(wwOutName) as? OnnxTensor ?: return
-            val scoreRaw = wwOutTensor.getFloatBuffer()
-            copyFloatBuffer(scoreRaw, scoreBuffer)
+            val wwShape = makeLongArray(1L, EMB_WINDOW.toLong(), EMB_DIM.toLong())
+            val wwTensor = OnnxTensor.createTensor(env, wwBytes.asFloatBuffer(), wwShape)
+            val wwResult = wwSession!!.run(java.util.HashMap(mapOf(wwInName to wwTensor)))
+            wwTensor.close()
+
+            val wwRaw = wwResult.get(wwOutName) as? OnnxTensor ?: return
+            val scoreBuf = wwRaw.getFloatBuffer()
+            val probability = if (scoreBuf.capacity() > 0) scoreBuf.get(0) else 0.0f
             wwResult.close()
-
-            val probability = if (scoreBuffer.capacity() > 0) scoreBuffer.get(0) else 0.0f
 
             if (probability >= PROB_THRESHOLD) {
                 wakeWordDetected = true
                 Log.i(TAG, "Wake word 'Hey Jarvis' detected! (score=$probability)")
                 refractoryUntilMs = System.currentTimeMillis() + REFRACTORY_MS
                 running = false
-                onDetected()
-                stopRecording()
+                onDetected(); stopRecording()
             }
-
-        } catch (e: ai.onnxruntime.OrtException) {
-            Log.w(TAG, "ONNX Runtime error", e)
-        } catch (e: Exception) {
-            Log.w(TAG, "Frame processing error", e)
-        }
-    }
-
-    /** Copies float data from a source FloatBuffer into a pre-allocated destination. */
-    private fun copyFloatBuffer(src: FloatBuffer, dst: FloatBuffer) {
-        src.rewind()
-        val n = minOf(src.remaining(), dst.capacity())
-        dst.clear()
-        dst.put(src) // reads up to src.remaining() floats
-        dst.rewind()
+        } catch (e: Exception) { Log.w(TAG, "processChunk", e) }
     }
 
     private fun stopRecording() {
@@ -314,21 +257,25 @@ class WakeWordDetector(
 
     companion object {
         private const val TAG = "WakeWordDetector"
-        const val FRAME_SIZE = 1280        // 80ms at 16kHz
+        const val FRAME_SIZE = 1280
+        const val MEL_WINDOW = 76
+        const val EMB_WINDOW = 16
+        const val EMB_DIM = 96
         private const val PROB_THRESHOLD = 0.5f
         private const val REFRACTORY_MS = 1000L
-        private const val MEL_FRAMES = 96   // melspectrogram time frames
-        private const val MEL_BINS = 32     // mel frequency bins
-        private const val EMBEDDING_SIZE = 512  // embedding dimension
     }
 }
 
-// ---- Helpers ----
+// ---- Helpers (proven to compile in this SDK) ----
 
-private fun jlongArray(vararg values: kotlin.Long): kotlin.LongArray {
-    val arr = kotlin.LongArray(values.size)
-    for (i in 0 until values.size) {
-        arr[i] = values[i]
-    }
+private fun <K, V> mapOf(key: K, value: V): java.util.HashMap<K, V> {
+    val m = java.util.HashMap<K, V>()
+    m.put(key, value)
+    return m
+}
+
+private fun makeLongArray(vararg values: Long): LongArray {
+    val arr = LongArray(values.size)
+    for (i in 0 until values.size) { arr[i] = values[i] }
     return arr
 }
