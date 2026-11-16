@@ -431,7 +431,7 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
     }
 
     private fun startRecording() {
-        if (!apiKeyManager.hasKey()) return
+        if (!computeVoiceAvailable()) return // any usable STT provider — not just the OpenAI key
 
         // Request exclusive audio focus to silence other apps during recording
         audioFocusManager.requestRecordingFocus()
