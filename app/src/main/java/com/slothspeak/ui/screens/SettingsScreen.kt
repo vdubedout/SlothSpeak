@@ -279,60 +279,6 @@ fun SettingsScreen(
                     )
 
                     Spacer(modifier = Modifier.height(24.dp))
-
-                    // Speech-to-Text Section
-                    SectionHeader("Speech-to-Text")
-
-                    Text(
-                        text = "Choose which provider handles voice transcription.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = TextSecondary,
-                        modifier = Modifier.padding(bottom = 8.dp)
-                    )
-
-                    SttSection(
-                        sttProvider = state.sttProvider,
-                        hasSttApiKey = state.hasSttApiKey,
-                        sttModel = state.sttModel,
-                        sttBaseUrl = state.sttBaseUrl,
-                        sttKeySaved = state.sttKeySaved,
-                        onSetProvider = { viewModel.setSttProvider(it) },
-                        onSaveApiKey = { viewModel.saveSttApiKey(it) },
-                        onDeleteApiKey = { viewModel.deleteSttApiKey() },
-                        onSetModel = { viewModel.setSttModel(it) },
-                        onSetBaseUrl = { viewModel.setSttBaseUrl(it) }
-                    )
-
-                    Spacer(modifier = Modifier.height(24.dp))
-
-                    // Text-to-Speech Section
-                    SectionHeader("Text-to-Speech")
-
-                    Text(
-                        text = "Choose which provider handles voice synthesis.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = TextSecondary,
-                        modifier = Modifier.padding(bottom = 8.dp)
-                    )
-
-                    TtsSection(
-                        ttsProvider = state.ttsProvider,
-                        ttsModel = state.ttsModel,
-                        ttsVoice = state.ttsVoice,
-                        ttsBaseUrl = state.ttsBaseUrl,
-                        hasTtsCustomApiKey = state.hasTtsCustomApiKey,
-                        ttsKeySaved = state.ttsKeySaved,
-                        onSetProvider = { viewModel.setTtsProvider(it) },
-                        onSetModel = { viewModel.setTtsModel(it) },
-                        onSetVoice = { viewModel.setTtsVoice(it) },
-                        onSetBaseUrl = { viewModel.setTtsBaseUrl(it) },
-                        onSaveCustomApiKey = { viewModel.saveTtsCustomApiKey(it) },
-                        onDeleteCustomApiKey = { viewModel.deleteTtsCustomApiKey() }
-                    )
-
-                    Spacer(modifier = Modifier.height(24.dp))
-
-                    // Gemini API Key Section
                     SectionHeader("Gemini API Key")
 
                     Card(
@@ -613,6 +559,60 @@ fun SettingsScreen(
 
             Spacer(modifier = Modifier.height(24.dp))
 
+
+            // Speech-to-Text Section
+            SectionHeader("Speech-to-Text")
+
+            Text(
+                text = "Choose which provider handles voice transcription.",
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary,
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
+
+            SttSection(
+                sttProvider = state.sttProvider,
+                hasSttApiKey = state.hasSttApiKey,
+                sttModel = state.sttModel,
+                sttBaseUrl = state.sttBaseUrl,
+                sttKeySaved = state.sttKeySaved,
+                onSetProvider = { viewModel.setSttProvider(it) },
+                onSaveApiKey = { viewModel.saveSttApiKey(it) },
+                onDeleteApiKey = { viewModel.deleteSttApiKey() },
+                onSetModel = { viewModel.setSttModel(it) },
+                onSetBaseUrl = { viewModel.setSttBaseUrl(it) }
+            )
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // Text-to-Speech Section
+            SectionHeader("Text-to-Speech")
+
+            Text(
+                text = "Choose which provider handles voice synthesis.",
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary,
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
+
+            TtsSection(
+                ttsProvider = state.ttsProvider,
+                ttsModel = state.ttsModel,
+                ttsVoice = state.ttsVoice,
+                ttsBaseUrl = state.ttsBaseUrl,
+                hasTtsCustomApiKey = state.hasTtsCustomApiKey,
+                ttsKeySaved = state.ttsKeySaved,
+                onSetProvider = { viewModel.setTtsProvider(it) },
+                onSetModel = { viewModel.setTtsModel(it) },
+                onSetVoice = { viewModel.setTtsVoice(it) },
+                onSetBaseUrl = { viewModel.setTtsBaseUrl(it) },
+                onSaveCustomApiKey = { viewModel.saveTtsCustomApiKey(it) },
+                onDeleteCustomApiKey = { viewModel.deleteTtsCustomApiKey() }
+            )
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // Gemini API Key Section
             // OpenAI-Compatible Providers Section
             SectionHeader("OpenAI-Compatible Providers")
 
