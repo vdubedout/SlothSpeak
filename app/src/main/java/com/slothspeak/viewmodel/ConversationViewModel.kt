@@ -5,6 +5,10 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import java.io.InputStream
+import java.io.OutputStream
+import java.io.FileInputStream
+import java.io.FileOutputStream
 import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.os.IBinder
@@ -16,6 +20,7 @@ import com.slothspeak.audio.AudioFocusManager
 import com.slothspeak.audio.AudioRecorder
 import com.slothspeak.audio.BluetoothAudioRouter
 import com.slothspeak.audio.VadAudioRecorder
+import com.slothspeak.audio.WakeWordDetector
 import com.slothspeak.data.ApiKeyManager
 import com.slothspeak.data.CompatibleProviderManager
 import com.slothspeak.data.db.SlothSpeakDatabase
@@ -51,6 +56,10 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
     private var serviceDeferred: CompletableDeferred<SlothSpeakService>? = null
     private var stateObserverJob: Job? = null
     private var loadConversationJob: Job? = null
+
+    // Wake word detection (on-device, openWakeWord)
+    private var wakeWordDetector: WakeWordDetector? = null
+    private var wakeWordObserverJob: Job? = null
 
     // Current conversation tracking
     private val _currentConversationId = MutableStateFlow<Long?>(null)
@@ -156,6 +165,15 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         )
         checkStorage()
         reconnectToActiveService()
+        // Arm wake word detection after first frame renders (one-shot).
+        // Guards: only arm if the service is NOT currently being bound
+        // (otherwise the service-connected handler would re-arm).
+        viewModelScope.launch {
+            delay(500)
+            if (!serviceBound && !_isPipelineRunning.value) {
+                maybeStartWakeWordDetection()
+            }
+        }
     }
 
     fun refreshApiKeyStatus() {
@@ -192,6 +210,150 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         return false
     }
 
+    // ============================================================
+    // Wake Word Detection Lifecycle
+    // ============================================================
+
+    @Volatile private var wakeWordDisabledForSession = false
+
+    /**
+     * Start the wake word detector if conditions are met:
+     * - wake word toggle enabled
+     * - no pipeline active (Idle state after unbind or before start)
+     * - RECORD_AUDIO granted at app level
+     * - not disabled for session due to prior init failure
+     *
+     * The detector runs while no pipeline/recording/playback is active.
+     */
+    /**
+     * Try to start the wake word detector.
+     * Clears the session-disable flag when the toggle is on, so that returning
+     * from Settings after toggling off→on triggers a fresh init attempt.
+     */
+    fun maybeStartWakeWordDetection() {
+        if (!apiKeyManager.getWakeWordEnabled()) return
+        // Clear the session-disable flag when the toggle is on — the user
+        // may have toggled off→on since the failure, requesting a fresh attempt.
+        if (wakeWordDisabledForSession) {
+            wakeWordDisabledForSession = false
+        }
+        if (_isPipelineRunning.value) return
+        if (wakeWordDetector?.isRunning == true) return
+
+        // Don't start if a pipeline is active
+        val state = _pipelineState.value
+        if (state !is SlothSpeakService.PipelineState.Idle &&
+            state !is SlothSpeakService.PipelineState.Complete) return
+
+        viewModelScope.launch(Dispatchers.IO) {
+            // Extract models from the APK bundle OFF the main thread
+            val melPath = ensureWakewordModel("melspectrogram.onnx") ?: run {
+                Log.w(TAG, "Wake word unavailable — missing melspectrogram model"); return@launch
+            }
+            val embPath = ensureWakewordModel("embedding_model.onnx") ?: run {
+                Log.w(TAG, "Wake word unavailable — missing embedding model"); return@launch
+            }
+            val wwPath = ensureWakewordModel("hey_jarvis_v0.1.onnx") ?: run {
+                Log.w(TAG, "Wake word unavailable — missing wake word model"); return@launch
+            }
+
+            Log.i(TAG, "Starting wake word detector")
+            val detector = WakeWordDetector(
+                context = getApplication(),
+                melSpectrogramPath = melPath,
+                embeddingModelPath = embPath,
+                wakeWordModelPath = wwPath,
+                onDetected = {
+                    Log.i(TAG, "Wake word 'Hey Jarvis' detected!")
+                    stopWakeWordDetection()
+                    val svc = service
+                    if (svc != null && serviceBound) {
+                        svc.triggerWakeWordDetected()
+                    } else {
+                        startNewQuestion()
+                    }
+                }
+            )
+            detector.start()
+            // Store the detector ref AFTER start() completes init
+            withContext(Dispatchers.Main) {
+                wakeWordDetector = detector
+            }
+        }
+    }
+
+    /**
+     * Stop the wake word detector if running.
+     */
+    fun stopWakeWordDetection() {
+        if (wakeWordDetector != null) {
+            Log.i(TAG, "Stopping wake word detector")
+            wakeWordDetector!!.release()
+            wakeWordDetector = null
+        }
+    }
+
+    /**
+     * Called from Settings toggle path to reset the session-disable flag when
+     * the user toggles wake word off then on (e.g. after an ONNX init failure).
+     */
+    fun resetWakeWordDisabledForSession() {
+        wakeWordDisabledForSession = false
+    }
+
+    /**
+     * Extracts a wake word ONNX model from the APK bundle to the app's cache
+     * directory on first run. Subsequent calls return the cached path.
+     *
+     * Uses atomic write: writes to `<name>.tmp` then renames to `<name>` so a
+     * killed process never leaves a corrupt cached model.
+     *
+     * Uses android.content.Context.assets.open(...) which reads from the APK's
+     * bundled asset resources under `assets/wakeword/`.
+     */
+    private fun ensureWakewordModel(modelName: String): String? {
+        val cacheDir = File(getApplication<Application>().filesDir, "wakeword")
+        cacheDir.mkdirs()
+        val cachedFile = File(cacheDir, modelName)
+
+        // Already cached — return immediately
+        if (cachedFile.exists() && cachedFile.length() > 0) {
+            return cachedFile.absolutePath
+        }
+
+        // Atomic write: .tmp then rename
+        val tmpFile = File(cacheDir, "${modelName}.tmp")
+        try {
+            val app = getApplication<Application>()
+            app.assets.open("wakeword/$modelName").use { input ->
+                FileOutputStream(tmpFile).use { output ->
+                    val buf = ByteArray(8192)
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n <= 0) break
+                        output.write(buf, 0, n)
+                    }
+                }
+            }
+            // Rename to final path (atomic on same filesystem)
+            if (tmpFile.exists() && tmpFile.length() > 0) {
+                tmpFile.renameTo(cachedFile)
+                Log.i(TAG, "Extracted wake word model: $modelName from APK assets")
+                if (cachedFile.exists() && cachedFile.length() > 0) {
+                    return cachedFile.absolutePath
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to extract model $modelName from APK assets", e)
+            wakeWordDisabledForSession = true
+        } finally {
+            // Clean up any leftover tmp file
+            try { if (tmpFile.exists()) tmpFile.delete() } catch (_: Exception) {}
+        }
+
+        return null
+    }
+
     fun goHome() {
         loadConversationJob?.cancel()
         val svc = service
@@ -219,6 +381,7 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
             _pipelineState.value = SlothSpeakService.PipelineState.Idle
             svc?.stopPlayback()
             unbindServiceSafely()
+            maybeStartWakeWordDetection()
         }
     }
 
@@ -370,6 +533,8 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
 
     fun startNewQuestion() {
         loadConversationJob?.cancel()
+        stopWakeWordDetection()
+        service?.cancelFollowUpListening() // avoid chain leak + double-recorder vs service VAD
         _currentConversationId.value = null
         _currentResponseId.value = null
         _sessionItems.value = emptyList()
@@ -385,6 +550,7 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
     }
 
     fun startFollowUp() {
+        stopWakeWordDetection()
         startRecording()
     }
 
@@ -404,11 +570,16 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         if (_isPipelineRunning.value) return // Close double-submit window before processing state lands
         if (!computeCanConverse()) return
 
+        // Stop wake word detector before any pipeline activity
+        stopWakeWordDetection()
+
         stopRecording() // Safety: stop any in-progress recording
 
-        // Obtain conversationId/previousResponseId the same way the voice flow does
-        val conversationId = _currentConversationId.value
-        val previousResponseId = _currentResponseId.value
+        // Fresh conversation: clear session items and IDs so the new question
+        // starts a brand-new conversation (no chaining)
+        _currentConversationId.value = null
+        _currentResponseId.value = null
+        _sessionItems.value = emptyList()
 
         _isPipelineRunning.value = true
         val deferred = bindAndAwaitService()
@@ -417,7 +588,7 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
             try {
                 val svc = withTimeout(10_000) { deferred.await() }
                 _isViewingActivePipeline.value = true
-                svc.startTextPipeline(question, conversationId, previousResponseId)
+                svc.startTextPipeline(question, null, null)
             } catch (e: TimeoutCancellationException) {
                 _isPipelineRunning.value = false
                 Log.e(TAG, "Timed out waiting for service bind for text question", e)
@@ -679,6 +850,7 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
                             )
                         }
                         _isViewingActivePipeline.value = false
+                        maybeStartWakeWordDetection()
                         unbindServiceSafely()
                         return@collect
                     }
@@ -693,6 +865,7 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
                         // Only unbind if the real pipeline isn't running.
                         // Replay finishing emits Idle but the pipeline may still be processing.
                         if (!_isPipelineRunning.value) {
+                            maybeStartWakeWordDetection()
                             unbindServiceSafely()
                         }
                         return@collect
@@ -799,6 +972,18 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
                 }
             }
         }
+
+        // Also observe wake word trigger from the service
+        viewModelScope.launch {
+            service?.wakeWordTriggered?.collect { triggered ->
+                if (triggered) {
+                    Log.i(TAG, "Wake word triggered — starting fresh New Question")
+                    service?.acknowledgeWakeWordTrigger()
+                    // Start a fresh New Question (Feature A semantics)
+                    startNewQuestion()
+                }
+            }
+        }
     }
 
     private fun addOrUpdateProcessingItem(question: String, answer: String?, isProcessing: Boolean = true, answerTextRich: String? = null) {
@@ -887,6 +1072,7 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
     }
 
     fun cancelPipeline() {
+        stopWakeWordDetection()
         vadObserverJob?.cancel()
         vadObserverJob = null
         vadRecorder?.release()
@@ -904,6 +1090,7 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
             vadSpeechDetected = false
         )
         unbindServiceSafely()
+        maybeStartWakeWordDetection()
     }
 
     fun requestCancelPipeline() {
@@ -936,7 +1123,12 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         unbindServiceSafely()
     }
 
+    /**
+     * Replay audio for a previous Q&A pair (playback only, no pipeline).
+     * Stops the wake word detector to free the mic during playback.
+     */
     fun replayAudio(files: List<File>, questionText: String = "", answerText: String = "") {
+        stopWakeWordDetection()
         _uiState.value = _uiState.value.copy(serviceBindError = false)
         val deferred = bindAndAwaitService()
 
@@ -1041,9 +1233,13 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         _isPipelineRunning.value = false
         svc.stopPlayback()
         unbindServiceSafely()
+        maybeStartWakeWordDetection()
     }
 
-    fun restartPlayback() = service?.restartPlayback()
+    fun restartPlayback() {
+        stopWakeWordDetection()
+        service?.restartPlayback()
+    }
 
     fun seekRelative(deltaMs: Int) = service?.seekRelative(deltaMs)
 

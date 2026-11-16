@@ -354,6 +354,15 @@ class ApiKeyManager(context: Context) {
         prefs.edit().putString(KEY_TTS_BASE_URL, normalized).apply()
     }
 
+    // Wake word settings
+    fun getWakeWordEnabled(): Boolean {
+        return prefs.getBoolean(KEY_WAKE_WORD_ENABLED, false)
+    }
+
+    fun setWakeWordEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_WAKE_WORD_ENABLED, enabled).apply()
+    }
+
     fun isTtsConfigured(): Boolean {
         return when (getTtsProvider()) {
             TTS_PROVIDER_OPENAI -> hasKey()
@@ -592,6 +601,7 @@ class ApiKeyManager(context: Context) {
         private const val KEY_FOLLOW_UP_PROMPT = "follow_up_prompt"
         private const val KEY_INTERACTIVE_VOICE = "interactive_voice_enabled"
         private const val KEY_SILENCE_TIMEOUT_MS = "silence_timeout_ms"
+        private const val KEY_WAKE_WORD_ENABLED = "wake_word_enabled"
         const val DEFAULT_SILENCE_TIMEOUT_MS = 2000
         const val DEFAULT_VOICE = "marin"
         val VOICES = listOf(
