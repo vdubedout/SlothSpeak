@@ -5,6 +5,10 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import java.io.InputStream
+import java.io.OutputStream
+import java.io.FileInputStream
+import java.io.FileOutputStream
 import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.os.IBinder
@@ -161,6 +165,11 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         )
         checkStorage()
         reconnectToActiveService()
+        // Arm wake word detection after first frame renders (one-shot)
+        viewModelScope.launch {
+            delay(500) // brief delay so the pipeline/UI is settled
+            maybeStartWakeWordDetection()
+        }
     }
 
     fun refreshApiKeyStatus() {
@@ -201,18 +210,20 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
     // Wake Word Detection Lifecycle
     // ============================================================
 
+    @Volatile private var wakeWordDisabledForSession = false
+
     /**
      * Start the wake word detector if conditions are met:
      * - wake word toggle enabled
      * - no pipeline active (Idle state after unbind or before start)
      * - RECORD_AUDIO granted at app level
+     * - not disabled for session due to prior init failure
      *
      * The detector runs while no pipeline/recording/playback is active.
-     * It is stopped by startNewQuestion / startFollowUp / submitTextQuestion
-     * (via stopWakeWordDetection).
      */
     fun maybeStartWakeWordDetection() {
         if (!apiKeyManager.getWakeWordEnabled()) return
+        if (wakeWordDisabledForSession) return
         if (_isPipelineRunning.value) return
         if (wakeWordDetector?.isRunning == true) return
 
@@ -221,9 +232,19 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         if (state !is SlothSpeakService.PipelineState.Idle &&
             state !is SlothSpeakService.PipelineState.Complete) return
 
-        val melPath = resolveAssetPath("wakeword/melspectrogram.onnx") ?: return
-        val embPath = resolveAssetPath("wakeword/embedding_model.onnx") ?: return
-        val wwPath = resolveAssetPath("wakeword/hey_jarvis_v0.1.onnx") ?: return
+        // Ensure models are extracted from the APK bundle
+        val melPath = ensureWakewordModel("melspectrogram.onnx") ?: run {
+            Log.w(TAG, "Wake word unavailable — missing melspectrogram model")
+            return
+        }
+        val embPath = ensureWakewordModel("embedding_model.onnx") ?: run {
+            Log.w(TAG, "Wake word unavailable — missing embedding model")
+            return
+        }
+        val wwPath = ensureWakewordModel("hey_jarvis_v0.1.onnx") ?: run {
+            Log.w(TAG, "Wake word unavailable — missing wake word model")
+            return
+        }
 
         Log.i(TAG, "Starting wake word detector")
         wakeWordDetector = WakeWordDetector(
@@ -233,14 +254,11 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
             wakeWordModelPath = wwPath,
             onDetected = {
                 Log.i(TAG, "Wake word 'Hey Jarvis' detected!")
-                // Stop ourselves, then signal to the bound service
                 stopWakeWordDetection()
-                // If the service is bound, use its trigger mechanism
                 val svc = service
                 if (svc != null && serviceBound) {
                     svc.triggerWakeWordDetected()
                 } else {
-                    // Service not bound — start fresh question directly
                     startNewQuestion()
                 }
             }
@@ -259,81 +277,54 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         }
     }
 
-    private fun resolveAssetPath(relativePath: String): String? {
+    /**
+     * Called from Settings toggle path to reset the session-disable flag when
+     * the user toggles wake word off then on (e.g. after an ONNX init failure).
+     */
+    fun resetWakeWordDisabledForSession() {
+        wakeWordDisabledForSession = false
+    }
+
+    /**
+     * Extracts a wake word ONNX model from the APK bundle to the app's cache
+     * directory on first run. Subsequent calls return the cached path.
+     *
+     * Uses android.content.Context.assets.open(...) which reads from the APK's
+     * bundled asset resources (app/src/main/assets/wakeword/ at build time).
+     */
+    private fun ensureWakewordModel(modelName: String): String? {
+        val cacheDir = File(getApplication<Application>().filesDir, "wakeword")
+        cacheDir.mkdirs()
+        val cachedFile = File(cacheDir, modelName)
+
+        // Already cached — return immediately
+        if (cachedFile.exists() && cachedFile.length() > 0) {
+            return cachedFile.absolutePath
+        }
+
+        // Extract from APK bundled assets via context.assets.open()
         try {
             val app = getApplication<Application>()
-            val appFilesDir = app.filesDir
-
-            // Extract the filename: "wakeword/melspectrogram.onnx" → "melspectrogram.onnx"
-            val assetName = relativePath.split("/").lastOrNull() ?: relativePath
-
-            // Cache path: copy to filesDir/wakeword/ for reliable access
-            val cacheDir = File(getApplication<Application>().filesDir, "wakeword")
-            cacheDir.mkdirs()
-            val cachedFile = File(cacheDir, assetName)
-
+            app.assets.open("wakeword/$modelName").use { input ->
+                FileOutputStream(cachedFile).use { output ->
+                    val buf = ByteArray(8192)
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n <= 0) break
+                        output.write(buf, 0, n)
+                    }
+                }
+            }
+            Log.i(TAG, "Extracted wake word model: $modelName from APK assets")
             if (cachedFile.exists() && cachedFile.length() > 0) {
                 return cachedFile.absolutePath
             }
-
-            // Try to find the source file and copy it to cache
-            val parentDir = File(getApplication<Application>().filesDir, "..")
-            val sourceCandidates = mutableListOf(
-                File(parentDir, "app/src/main/assets/$relativePath"),
-                File(appFilesDir, "../app/src/main/assets/$relativePath"),
-                File(appFilesDir, "../assets/$relativePath"),
-                File(parentDir, "assets/$relativePath"),
-                File(appFilesDir, "assets/wakeword/$assetName")
-            )
-
-            var sourceFile: File? = null
-            for (candidate in sourceCandidates) {
-                if (candidate.exists() && candidate.isFile) {
-                    sourceFile = candidate
-                    break
-                }
-            }
-
-            if (sourceFile != null) {
-                try {
-                    // Read source into byte buffer and write to cached file
-                    val input = java.io.BufferedInputStream(java.io.FileInputStream(sourceFile))
-                    val output = java.io.FileOutputStream(cachedFile)
-                    val buf = ByteArray(8192)
-                    var bytesRead: Int
-                    while (true) {
-                        bytesRead = input.read(buf)
-                        if (bytesRead <= 0) break
-                        output.write(buf, 0, bytesRead)
-                    }
-                    input.close()
-                    output.close()
-                    Log.i(TAG, "Cached wake word model: $assetName")
-                    if (cachedFile.exists() && cachedFile.length() > 0) {
-                        return cachedFile.absolutePath
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed to cache wake word model: $assetName", e)
-                }
-            }
-
-            // If we couldn't cache it but the source exists, use the source directly
-            if (sourceFile != null) {
-                return sourceFile.absolutePath
-            }
-
-            // Also try reading directly from the bundled asset path within the APK
-            val bundledPath = File(getApplication<Application>().filesDir, relativePath)
-            if (bundledPath.exists()) {
-                return bundledPath.absolutePath
-            }
-
-            Log.w(TAG, "Wake word asset not found: $relativePath")
-            return null
         } catch (e: Exception) {
-            Log.e(TAG, "Error resolving wake word asset path", e)
-            return null
+            Log.w(TAG, "Failed to extract model $modelName from APK assets", e)
+            wakeWordDisabledForSession = true
         }
+
+        return null
     }
 
     fun goHome() {
@@ -550,6 +541,9 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         if (question.isBlank()) return
         if (_isPipelineRunning.value) return // Close double-submit window before processing state lands
         if (!computeCanConverse()) return
+
+        // Stop wake word detector before any pipeline activity
+        stopWakeWordDetection()
 
         stopRecording() // Safety: stop any in-progress recording
 
@@ -1101,7 +1095,12 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         unbindServiceSafely()
     }
 
+    /**
+     * Replay audio for a previous Q&A pair (playback only, no pipeline).
+     * Stops the wake word detector to free the mic during playback.
+     */
     fun replayAudio(files: List<File>, questionText: String = "", answerText: String = "") {
+        stopWakeWordDetection()
         _uiState.value = _uiState.value.copy(serviceBindError = false)
         val deferred = bindAndAwaitService()
 
@@ -1209,7 +1208,10 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         maybeStartWakeWordDetection()
     }
 
-    fun restartPlayback() = service?.restartPlayback()
+    fun restartPlayback() {
+        stopWakeWordDetection()
+        service?.restartPlayback()
+    }
 
     fun seekRelative(deltaMs: Int) = service?.seekRelative(deltaMs)
 

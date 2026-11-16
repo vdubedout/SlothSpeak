@@ -108,6 +108,7 @@ fun MainScreen(
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 viewModel.refreshApiKeyStatus()
+                viewModel.maybeStartWakeWordDetection()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)

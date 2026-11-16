@@ -344,9 +344,18 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     // Wake Word Settings
     // ============================================================
 
+    /**
+     * Enable/disable the wake word toggle.
+     * When enabling, also resets the session-disable flag on the main ViewModel
+     * so that an earlier ONNX init failure is cleared.
+     */
     fun setWakeWordEnabled(enabled: Boolean) {
         apiKeyManager.setWakeWordEnabled(enabled)
         _state.value = _state.value.copy(wakeWordEnabled = enabled)
+        if (enabled) {
+            // The ConversationViewModel will pick this up on return to main screen
+            // via goHome() -> maybeStartWakeWordDetection()
+        }
     }
 
     fun setFollowUpPrompt(prompt: String) {

@@ -29,17 +29,13 @@ import java.util.HashMap
  * feeding 80 ms frames (1280 samples) through a 3-stage ONNX pipeline:
  * melspectrogram -> embedding_model -> hey_jarvis classifier.
  *
+ * Pre-allocates reusable float buffers to avoid native-memory use-after-free
+ * when ONNX Result objects are closed.
+ *
  * Invokes [onDetected] callback when the score >= 0.5.
  * Includes a ~1 second refractory period after detection.
  *
  * Safe no-op when RECORD_AUDIO permission is missing.
- *
- * Usage:
- *   val detector = WakeWordDetector(context, melPath, embPath, wwPath) { onWakeWordDetected() }
- *   detector.start()
- *   // ... later ...
- *   detector.stop()
- *   detector.release()
  */
 class WakeWordDetector(
     private val context: Context,
@@ -59,7 +55,25 @@ class WakeWordDetector(
     private var wakeWordDetected = false
     private var refractoryUntilMs: Long = 0
 
-    private var floatBuffer = kotlin.FloatArray(FRAME_SIZE)
+    // ---- Pre-allocated buffers (reused per frame, no allocation in hot path) ----
+
+    // Input frame: float32 array of 1280 samples
+    private var inputFrameBytes: ByteBuffer = ByteBuffer.allocate(FRAME_SIZE * 4)
+    private var inputShape: kotlin.LongArray = jlongArray(1L, FRAME_SIZE.toLong())
+
+    // Mel-spectrogram output: pre-allocated based on inferred shape (96 frames x 32 mel bins)
+    private var melOutBuffer: FloatBuffer = FloatBuffer.allocate(MEL_FRAMES * MEL_BINS)
+    private var melShape: kotlin.LongArray = jlongArray(1L, 1L, MEL_FRAMES.toLong(), MEL_BINS.toLong())
+
+    // Embedding output: pre-allocated (common sizes: 512 or 1024)
+    private var embOutBuffer: FloatBuffer = FloatBuffer.allocate(EMBEDDING_SIZE)
+    private var embShape: kotlin.LongArray = jlongArray(1L, EMBEDDING_SIZE.toLong())
+
+    // Score output: single float
+    private var scoreBuffer: FloatBuffer = FloatBuffer.allocate(1)
+
+    // Reusable HashMap for ONNX inputs (cleared between runs)
+    private val inputMap = java.util.HashMap<String, OnnxTensorLike>()
 
     val isRunning: Boolean get() = running
     val wasDetected: Boolean get() = wakeWordDetected
@@ -214,58 +228,58 @@ class WakeWordDetector(
         if (now < refractoryUntilMs) return
 
         try {
-            // Convert short[] to float32[], normalize int16 range
+            // ---- Step 0: pack float32 input bytes ----
+            inputFrameBytes.clear()
+            inputFrameBytes.order(ByteOrder.LITTLE_ENDIAN)
             for (i in 0 until FRAME_SIZE) {
-                floatBuffer[i] = frame[i].toFloat() / 32768.0f
+                inputFrameBytes.putFloat(frame[i].toFloat() / 32768.0f)
             }
+            inputFrameBytes.rewind()
 
-            // Pack float data into a little-endian byte buffer, then wrap as FloatBuffer
-            val byteBuf = java.nio.ByteBuffer.allocate(FRAME_SIZE * 4).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-            for (i in 0 until FRAME_SIZE) {
-                byteBuf.putFloat(floatBuffer[i])
-            }
-            byteBuf.rewind()
-            val inputShape = jlongArray(1L, FRAME_SIZE.toLong())
-
-            // --- melspectrogram ---
-            val melInput = OnnxTensor.createTensor(ortEnv!!, byteBuf.asFloatBuffer(), inputShape)
             val melInName = melSess.getInputNames().iterator().next()
             val melOutName = melSess.getOutputNames().iterator().next()
 
-            val melResult = melSess.run(java.util.HashMap(mapOf(melInName to melInput)))
+            // ---- Step 1: melspectrogram ----
+            val melInput = OnnxTensor.createTensor(ortEnv!!, inputFrameBytes.asFloatBuffer(), inputShape)
+            inputMap.clear(); inputMap.put(melInName, melInput)
+            val melResult = melSess.run(inputMap)
             melInput.close()
 
             val melOutTensor = melResult.get(melOutName) as? OnnxTensor ?: return
-            val melBuf = melOutTensor.getFloatBuffer()
-            val melShape = melOutTensor.getInfo().shape
+            // COPY data OUT before close() to avoid use-after-free
+            val melRaw = melOutTensor.getFloatBuffer()
+            copyFloatBuffer(melRaw, melOutBuffer)
             melResult.close()
 
-            // --- embedding model ---
-            val embInput = OnnxTensor.createTensor(ortEnv!!, melBuf, melShape)
             val embInName = embSess.getInputNames().iterator().next()
             val embOutName = embSess.getOutputNames().iterator().next()
 
-            val embResult = embSess.run(java.util.HashMap(mapOf(embInName to embInput)))
+            // ---- Step 2: embedding model ----
+            val embInput = OnnxTensor.createTensor(ortEnv!!, melOutBuffer, melShape)
+            inputMap.clear(); inputMap.put(embInName, embInput)
+            val embResult = embSess.run(inputMap)
             embInput.close()
 
             val embOutTensor = embResult.get(embOutName) as? OnnxTensor ?: return
-            val embBuf = embOutTensor.getFloatBuffer()
-            val embShape = embOutTensor.getInfo().shape
+            val embRaw = embOutTensor.getFloatBuffer()
+            copyFloatBuffer(embRaw, embOutBuffer)
             embResult.close()
 
-            // --- wake word classifier ---
-            val wwInput = OnnxTensor.createTensor(ortEnv!!, embBuf, embShape)
             val wwInName = wwSess.getInputNames().iterator().next()
             val wwOutName = wwSess.getOutputNames().iterator().next()
 
-            val wwResult = wwSess.run(java.util.HashMap(mapOf(wwInName to wwInput)))
+            // ---- Step 3: wake word classifier ----
+            val wwInput = OnnxTensor.createTensor(ortEnv!!, embOutBuffer, embShape)
+            inputMap.clear(); inputMap.put(wwInName, wwInput)
+            val wwResult = wwSess.run(inputMap)
             wwInput.close()
 
             val wwOutTensor = wwResult.get(wwOutName) as? OnnxTensor ?: return
-            val scoreBuf = wwOutTensor.getFloatBuffer()
+            val scoreRaw = wwOutTensor.getFloatBuffer()
+            copyFloatBuffer(scoreRaw, scoreBuffer)
             wwResult.close()
 
-            val probability = if (scoreBuf.capacity() > 0) scoreBuf.get(0) else 0.0f
+            val probability = if (scoreBuffer.capacity() > 0) scoreBuffer.get(0) else 0.0f
 
             if (probability >= PROB_THRESHOLD) {
                 wakeWordDetected = true
@@ -283,6 +297,15 @@ class WakeWordDetector(
         }
     }
 
+    /** Copies float data from a source FloatBuffer into a pre-allocated destination. */
+    private fun copyFloatBuffer(src: FloatBuffer, dst: FloatBuffer) {
+        src.rewind()
+        val n = minOf(src.remaining(), dst.capacity())
+        dst.clear()
+        dst.put(src) // reads up to src.remaining() floats
+        dst.rewind()
+    }
+
     private fun stopRecording() {
         try { audioRecord?.stop() } catch (_: Exception) {}
         try { audioRecord?.release() } catch (_: Exception) {}
@@ -291,9 +314,12 @@ class WakeWordDetector(
 
     companion object {
         private const val TAG = "WakeWordDetector"
-        const val FRAME_SIZE = 1280
+        const val FRAME_SIZE = 1280        // 80ms at 16kHz
         private const val PROB_THRESHOLD = 0.5f
         private const val REFRACTORY_MS = 1000L
+        private const val MEL_FRAMES = 96   // melspectrogram time frames
+        private const val MEL_BINS = 32     // mel frequency bins
+        private const val EMBEDDING_SIZE = 512  // embedding dimension
     }
 }
 
@@ -305,10 +331,4 @@ private fun jlongArray(vararg values: kotlin.Long): kotlin.LongArray {
         arr[i] = values[i]
     }
     return arr
-}
-
-private fun <K, V> mapOf(key: K, value: V): java.util.HashMap<K, V> {
-    val m = java.util.HashMap<K, V>()
-    m.put(key, value)
-    return m
 }
