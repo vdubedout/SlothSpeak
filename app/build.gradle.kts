@@ -104,6 +104,9 @@ dependencies {
     // Silero VAD (Voice Activity Detection)
     implementation("com.github.gkonovalov.android-vad:silero:2.0.10")
 
+    // ONNX Runtime — for openWakeWord on-device detection
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
+
     // Test dependencies
     testImplementation("org.robolectric:robolectric:4.18")
     testImplementation("io.github.takahirom.roborazzi:roborazzi:1.79.0")

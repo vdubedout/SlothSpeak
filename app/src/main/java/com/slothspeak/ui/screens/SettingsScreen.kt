@@ -1298,6 +1298,10 @@ fun SettingsScreen(
                 }
             }
 
+            // Wake Word Section
+            SectionHeader("Wake Word")
+            WakeWordSection(state.wakeWordEnabled) { viewModel.setWakeWordEnabled(it) }
+
             Spacer(modifier = Modifier.height(24.dp))
 
             // System Prompts Section (collapsible)
@@ -2145,6 +2149,50 @@ private fun LicenseEntry(name: String, author: String, license: String) {
             style = MaterialTheme.typography.bodySmall,
             color = TextSecondary
         )
+    }
+}
+
+@Composable
+fun WakeWordSection(
+    wakeWordEnabled: Boolean,
+    onToggle: (Boolean) -> Unit
+) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        ),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Hey Jarvis wake word",
+                    style = MaterialTheme.typography.bodyLarge
+                )
+                Text(
+                    text = "Runs fully on-device using openWakeWord (open-source, Apache-2.0). No account needed.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary
+                )
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            Switch(
+                checked = wakeWordEnabled,
+                onCheckedChange = onToggle,
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = AccentGreen,
+                    checkedTrackColor = AccentGreen.copy(alpha = 0.5f),
+                    uncheckedThumbColor = Color.Gray,
+                    uncheckedTrackColor = Color.Gray.copy(alpha = 0.5f),
+                    uncheckedBorderColor = Color.Gray
+                )
+            )
+        }
     }
 }
 

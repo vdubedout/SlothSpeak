@@ -64,6 +64,8 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         val sttKeySaved: Boolean = false,
         val sttModel: String = ApiKeyManager.DEFAULT_STT_MODEL_OPENAI,
         val sttBaseUrl: String = "https://api.openai.com/v1/",
+        // Wake word
+        val wakeWordEnabled: Boolean = false,
         // TTS
         val ttsProvider: String = ApiKeyManager.TTS_PROVIDER_OPENAI,
         val ttsModel: String = ApiKeyManager.DEFAULT_TTS_MODEL_OPENAI,
@@ -105,6 +107,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                 ttsInstructions = apiKeyManager.getTtsInstructions(),
                 interactiveVoiceEnabled = apiKeyManager.getInteractiveVoiceEnabled(),
                 silenceTimeoutMs = apiKeyManager.getSilenceTimeoutMs(),
+                wakeWordEnabled = apiKeyManager.getWakeWordEnabled(),
                 followUpPrompt = apiKeyManager.getFollowUpPrompt(),
                 compatProviders = compatibleProviderManager.getProviders(),
                 selectedCompatProviderId = apiKeyManager.getSelectedCompatProviderId(),
@@ -335,6 +338,15 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     fun setSilenceTimeoutMs(ms: Int) {
         apiKeyManager.setSilenceTimeoutMs(ms)
         _state.value = _state.value.copy(silenceTimeoutMs = ms)
+    }
+
+    // ============================================================
+    // Wake Word Settings
+    // ============================================================
+
+    fun setWakeWordEnabled(enabled: Boolean) {
+        apiKeyManager.setWakeWordEnabled(enabled)
+        _state.value = _state.value.copy(wakeWordEnabled = enabled)
     }
 
     fun setFollowUpPrompt(prompt: String) {

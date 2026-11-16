@@ -21,6 +21,7 @@ import com.slothspeak.ui.screens.CompatProvidersList
 import com.slothspeak.ui.screens.SttSection
 import com.slothspeak.ui.screens.TextInputQuestionBar
 import com.slothspeak.ui.screens.TtsSection
+import com.slothspeak.ui.screens.WakeWordSection
 import com.slothspeak.ui.theme.SlothSpeakTheme
 import org.junit.Rule
 import org.junit.Test
@@ -315,5 +316,37 @@ the weather is most favorable and the city's parks and gardens are at their most
 
         // PNG capture
         rule.onRoot().captureRoboImage("build/ui-screenshots/settings_ttsSection.png")
+    }
+
+    // ========================
+    //  Test 7: Wake Word Settings Section
+    // ========================
+
+    @Test
+    fun settings_wakeWordSection_png() {
+        rule.setContent {
+            SlothSpeakTheme {
+                Surface(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            text = "Wake Word",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = com.slothspeak.ui.theme.AccentGreen
+                        )
+                        WakeWordSection(
+                            wakeWordEnabled = false,
+                            onToggle = {}
+                        )
+                    }
+                }
+            }
+        }
+        rule.waitForIdle()
+
+        // Semantics assertions
+        rule.onNodeWithText("Hey Jarvis wake word").assertIsDisplayed()
+
+        // PNG capture
+        rule.onRoot().captureRoboImage("build/ui-screenshots/settings_wakeWordSection.png")
     }
 }

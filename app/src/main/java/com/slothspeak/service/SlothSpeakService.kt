@@ -34,6 +34,7 @@ import com.slothspeak.audio.OnDeviceTtsSynthesizer
 import com.slothspeak.audio.TtsProcessor
 import com.slothspeak.audio.TtsSynthesizer
 import com.slothspeak.audio.VadAudioRecorder
+import com.slothspeak.audio.WakeWordDetector
 import com.slothspeak.data.ApiKeyManager
 import com.slothspeak.data.CompatibleProviderManager
 import com.slothspeak.data.db.SlothSpeakDatabase
@@ -84,6 +85,10 @@ class SlothSpeakService : Service() {
     private var vadRecorder: VadAudioRecorder? = null
     private var followUpJob: Job? = null
     private var onDeviceTtsSynthesizer: OnDeviceTtsSynthesizer? = null
+
+    // Wake word trigger state flow — observed by the ViewModel to start a fresh New Question
+    private val _wakeWordTriggered = MutableStateFlow(false)
+    val wakeWordTriggered: StateFlow<Boolean> = _wakeWordTriggered
 
     private lateinit var apiKeyManager: ApiKeyManager
     private lateinit var openAIClient: OpenAIClient
@@ -2284,6 +2289,24 @@ class SlothSpeakService : Service() {
             if (it.isHeld) it.release()
         }
         playbackWakeLock = null
+    }
+
+    // ============================================================
+    // Wake Word Detection Lifecycle
+    /**
+     * Called by the ViewModel's WakeWordDetector when 'Hey Jarvis' is detected.
+     * Emits a trigger that the ViewModel observes to start a fresh New Question flow.
+     */
+    fun triggerWakeWordDetected() {
+        Log.i(TAG, "Wake word detected — triggering fresh New Question")
+        _wakeWordTriggered.value = true
+    }
+
+    /**
+     * The ViewModel calls this to acknowledge and reset the wake word trigger.
+     */
+    fun acknowledgeWakeWordTrigger() {
+        _wakeWordTriggered.value = false
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
