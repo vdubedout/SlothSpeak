@@ -7,6 +7,8 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.media.PlaybackParams
@@ -318,7 +320,28 @@ class SlothSpeakService : Service() {
     override fun onBind(intent: Intent?): IBinder = binder
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForeground(NOTIFICATION_ID, createNotification("Preparing..."))
+        // Android 14+ (targetSdk 35): starting a foreground service with the manifest-declared
+        // microphone type requires RECORD_AUDIO to be granted AT THIS MOMENT. Text-only users
+        // may never have granted mic access — degrade to mediaPlayback-only instead of crashing
+        // with SecurityException. Voice recording from a foreground activity remains permitted
+        // without the FGS microphone type.
+        val micGranted = checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+        val serviceType = when {
+            android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R && micGranted ->
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK or
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q ->
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+            else -> 0
+        }
+        if (serviceType != 0) {
+            androidx.core.app.ServiceCompat.startForeground(
+                this, NOTIFICATION_ID, createNotification("Preparing..."), serviceType
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, createNotification("Preparing..."))
+        }
         return START_NOT_STICKY
     }
 
