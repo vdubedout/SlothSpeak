@@ -190,7 +190,7 @@ class WakeWordDetector(
             val melResult = melSession!!.run(java.util.HashMap(mapOf(melInName to melTensor)))
             melTensor.close()
 
-            val melRaw = melResult.get(melOutName) as? OnnxTensor
+            val melRaw = melResult.get(melOutName).orElse(null) as? ai.onnxruntime.OnnxTensor
             if (melRaw == null) { melResult.close(); noteFailure("mel output tensor missing"); return }
             val melBuf = melRaw.getFloatBuffer()
             val melInfo = melRaw.getInfo()
@@ -226,7 +226,7 @@ class WakeWordDetector(
             val embResult = embSession!!.run(java.util.HashMap(mapOf(embInName to embTensor)))
             embTensor.close()
 
-            val embRaw = embResult.get(embOutName) as? OnnxTensor
+            val embRaw = embResult.get(embOutName).orElse(null) as? ai.onnxruntime.OnnxTensor
             if (embRaw == null) { embResult.close(); noteFailure("embedding output tensor missing"); return }
             val embBuf = embRaw.getFloatBuffer()
             val embLen = embBuf.capacity()
@@ -251,7 +251,7 @@ class WakeWordDetector(
             val wwResult = wwSession!!.run(java.util.HashMap(mapOf(wwInName to wwTensor)))
             wwTensor.close()
 
-            val wwRaw = wwResult.get(wwOutName) as? OnnxTensor
+            val wwRaw = wwResult.get(wwOutName).orElse(null) as? ai.onnxruntime.OnnxTensor
             if (wwRaw == null) { wwResult.close(); noteFailure("classifier output tensor missing"); return }
             val scoreBuf = wwRaw.getFloatBuffer()
             val probability = if (scoreBuf.capacity() > 0) scoreBuf.get(0) else 0.0f
@@ -272,6 +272,7 @@ class WakeWordDetector(
      *  consecutive failures, log once and disable the detector for the session
      *  (prevents per-frame log spam + mic/battery burn on corrupt models). */
     private fun noteFailure(where: String, e: Exception? = null) {
+        if (disabledForSession) return // already tripped — don't spam
         consecutiveFailures++
         if (e != null) Log.w(TAG, "$where (failure $consecutiveFailures/$MAX_CONSECUTIVE_FAILURES)", e)
         if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
