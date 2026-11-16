@@ -245,23 +245,19 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         if (state !is SlothSpeakService.PipelineState.Idle &&
             state !is SlothSpeakService.PipelineState.Complete) return
 
-        // Ensure models are extracted from the APK bundle
-        val melPath = ensureWakewordModel("melspectrogram.onnx") ?: run {
-            Log.w(TAG, "Wake word unavailable — missing melspectrogram model")
-            return
-        }
-        val embPath = ensureWakewordModel("embedding_model.onnx") ?: run {
-            Log.w(TAG, "Wake word unavailable — missing embedding model")
-            return
-        }
-        val wwPath = ensureWakewordModel("hey_jarvis_v0.1.onnx") ?: run {
-            Log.w(TAG, "Wake word unavailable — missing wake word model")
-            return
-        }
-
-        Log.i(TAG, "Starting wake word detector")
-        // Model extraction and ONNX init happen on IO dispatcher
         viewModelScope.launch(Dispatchers.IO) {
+            // Extract models from the APK bundle OFF the main thread
+            val melPath = ensureWakewordModel("melspectrogram.onnx") ?: run {
+                Log.w(TAG, "Wake word unavailable — missing melspectrogram model"); return@launch
+            }
+            val embPath = ensureWakewordModel("embedding_model.onnx") ?: run {
+                Log.w(TAG, "Wake word unavailable — missing embedding model"); return@launch
+            }
+            val wwPath = ensureWakewordModel("hey_jarvis_v0.1.onnx") ?: run {
+                Log.w(TAG, "Wake word unavailable — missing wake word model"); return@launch
+            }
+
+            Log.i(TAG, "Starting wake word detector")
             val detector = WakeWordDetector(
                 context = getApplication(),
                 melSpectrogramPath = melPath,
@@ -538,6 +534,7 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
     fun startNewQuestion() {
         loadConversationJob?.cancel()
         stopWakeWordDetection()
+        service?.cancelFollowUpListening() // avoid chain leak + double-recorder vs service VAD
         _currentConversationId.value = null
         _currentResponseId.value = null
         _sessionItems.value = emptyList()

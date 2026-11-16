@@ -76,6 +76,7 @@ class WakeWordDetector(
     private var embOutFloat: kotlin.FloatArray? = null
 
     private var disabledForSession = false
+    private var consecutiveFailures = 0
 
     val isRunning: Boolean get() = running
     val wasDetected: Boolean get() = wakeWordDetected
@@ -122,14 +123,28 @@ class WakeWordDetector(
             for (n in wwSession!!.getInputNames()) { wwInName = n; break }
             for (n in wwSession!!.getOutputNames()) { wwOutName = n; break }
 
+            // Fail-loud shape assertion at init (mismatched models must disable the
+            // detector immediately — per-frame failures are circuit-broken in processChunk).
+            val embIn = (embSession!!.inputInfo.values.first().getInfo() as ai.onnxruntime.TensorInfo).shape
+            val wwIn = (wwSession!!.inputInfo.values.first().getInfo() as ai.onnxruntime.TensorInfo).shape
+            require(embIn.size == 4 &&
+                (embIn[1] == MEL_WINDOW.toLong() || embIn[1] == -1L) &&
+                (embIn[2] == 32L || embIn[2] == -1L) &&
+                (embIn[3] == 1L || embIn[3] == -1L)) {
+                "embedding model input shape mismatch: ${embIn.toList()} (expected [N,$MEL_WINDOW,32,1])"
+            }
+            require(wwIn.size == 3 &&
+                (wwIn[0] == 1L || wwIn[0] == -1L) &&
+                (wwIn[1] == EMB_WINDOW.toLong() || wwIn[1] == -1L) &&
+                (wwIn[2] == EMB_DIM.toLong() || wwIn[2] == -1L)) {
+                "wake word model input shape mismatch: ${wwIn.toList()} (expected [1,$EMB_WINDOW,$EMB_DIM])"
+            }
+
             Log.i(TAG, "Wake word ONNX initialized (mel=$melInName->$melOutName, emb=$embInName->$embOutName, ww=$wwInName->$wwOutName)")
             return true
         } catch (e: OrtException) { Log.e(TAG, "ORT error", e); releaseOnnx(); return false }
-        catch (e: Exception) { Log.e(TAG, "Init error", e); releaseOnnx(); return false }
+        catch (e: Exception) { Log.e(TAG, "Init error (shape validation failed — model mismatch?)", e); releaseOnnx(); return false }
     }
-
-    // Shape validation is done implicitly: if the ONNX models have unexpected shapes,
-    // inference will throw OrtException which we catch in processChunk.
 
     private fun releaseOnnx() {
         try { wwSession?.close() } catch (_: Exception) {}; wwSession = null
@@ -175,7 +190,8 @@ class WakeWordDetector(
             val melResult = melSession!!.run(java.util.HashMap(mapOf(melInName to melTensor)))
             melTensor.close()
 
-            val melRaw = melResult.get(melOutName) as? OnnxTensor ?: return
+            val melRaw = melResult.get(melOutName) as? OnnxTensor
+            if (melRaw == null) { melResult.close(); noteFailure("mel output tensor missing"); return }
             val melBuf = melRaw.getFloatBuffer()
             val melInfo = melRaw.getInfo()
             val melShape = melInfo.getShape()
@@ -210,7 +226,8 @@ class WakeWordDetector(
             val embResult = embSession!!.run(java.util.HashMap(mapOf(embInName to embTensor)))
             embTensor.close()
 
-            val embRaw = embResult.get(embOutName) as? OnnxTensor ?: return
+            val embRaw = embResult.get(embOutName) as? OnnxTensor
+            if (embRaw == null) { embResult.close(); noteFailure("embedding output tensor missing"); return }
             val embBuf = embRaw.getFloatBuffer()
             val embLen = embBuf.capacity()
             if (embOutFloat == null || embOutFloat!!.size < embLen) { embOutFloat = kotlin.FloatArray(embLen) }
@@ -234,7 +251,8 @@ class WakeWordDetector(
             val wwResult = wwSession!!.run(java.util.HashMap(mapOf(wwInName to wwTensor)))
             wwTensor.close()
 
-            val wwRaw = wwResult.get(wwOutName) as? OnnxTensor ?: return
+            val wwRaw = wwResult.get(wwOutName) as? OnnxTensor
+            if (wwRaw == null) { wwResult.close(); noteFailure("classifier output tensor missing"); return }
             val scoreBuf = wwRaw.getFloatBuffer()
             val probability = if (scoreBuf.capacity() > 0) scoreBuf.get(0) else 0.0f
             wwResult.close()
@@ -246,7 +264,22 @@ class WakeWordDetector(
                 running = false
                 onDetected(); stopRecording()
             }
-        } catch (e: Exception) { Log.w(TAG, "processChunk", e) }
+            consecutiveFailures = 0
+        } catch (e: Exception) { noteFailure("processChunk", e) }
+    }
+
+    /** Persistent-inference-failure circuit breaker: after MAX_CONSECUTIVE_FAILURES
+     *  consecutive failures, log once and disable the detector for the session
+     *  (prevents per-frame log spam + mic/battery burn on corrupt models). */
+    private fun noteFailure(where: String, e: Exception? = null) {
+        consecutiveFailures++
+        if (e != null) Log.w(TAG, "$where (failure $consecutiveFailures/$MAX_CONSECUTIVE_FAILURES)", e)
+        if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+            Log.e(TAG, "Wake word disabled for session after $consecutiveFailures consecutive failures ($where)")
+            disabledForSession = true
+            running = false
+            stopRecording()
+        }
     }
 
     private fun stopRecording() {
@@ -261,6 +294,7 @@ class WakeWordDetector(
         const val MEL_WINDOW = 76
         const val EMB_WINDOW = 16
         const val EMB_DIM = 96
+        private const val MAX_CONSECUTIVE_FAILURES = 5
         private const val PROB_THRESHOLD = 0.5f
         private const val REFRACTORY_MS = 1000L
     }
