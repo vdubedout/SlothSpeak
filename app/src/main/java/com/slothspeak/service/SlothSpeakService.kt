@@ -72,6 +72,8 @@ class SlothSpeakService : Service() {
 
     // Mute mode: when true, pipeline completes and saves but skips playback, ping, and follow-up
     @Volatile var isMuted = false
+    @Volatile var wakeWordForegroundActive = false
+        private set
 
     // Early DB persistence tracking
     @Volatile private var earlyConversationId: Long? = null
@@ -921,7 +923,7 @@ class SlothSpeakService : Service() {
                     )
                     updateNotification("Answer ready (skipped during call)")
                     delay(1000)
-                    stopSelf()
+                    stopSelfWithWakeWordGuard()
                     return@launch
                 }
 
@@ -940,7 +942,7 @@ class SlothSpeakService : Service() {
                     )
                     updateNotification("Answer ready")
                     delay(1000)
-                    stopSelf()
+                    stopSelfWithWakeWordGuard()
                     return@launch
                 }
 
@@ -960,7 +962,7 @@ class SlothSpeakService : Service() {
                     )
                     updateNotification("Answer ready (muted)")
                     delay(1000)
-                    stopSelf()
+                    stopSelfWithWakeWordGuard()
                     return@launch
                 }
 
@@ -1043,7 +1045,7 @@ class SlothSpeakService : Service() {
                     )
                     updateNotification("Answer complete")
                     delay(1000)
-                    stopSelf()
+                    stopSelfWithWakeWordGuard()
                 }
             } finally {
                 releasePlaybackWakeLock()
@@ -1978,7 +1980,7 @@ class SlothSpeakService : Service() {
         serviceScope.launch {
             delay(1500)
             _pipelineState.value = PipelineState.Idle
-            stopSelf()
+            stopSelfWithWakeWordGuard()
         }
     }
 
@@ -2029,7 +2031,7 @@ class SlothSpeakService : Service() {
         audioFocusManager.abandonFocus()
         deactivateMediaSession()
         _pipelineState.value = PipelineState.Idle
-        stopSelf()
+        stopSelfWithWakeWordGuard()
     }
 
     fun setPlaybackSpeed(speed: Float) {
@@ -2088,7 +2090,7 @@ class SlothSpeakService : Service() {
         audioFocusManager.abandonFocus()
         deactivateMediaSession()
         _pipelineState.value = PipelineState.Idle
-        stopSelf()
+        stopSelfWithWakeWordGuard()
     }
 
     fun replayAudio(files: List<File>, questionText: String = "", answerText: String = "") {
@@ -2165,7 +2167,7 @@ class SlothSpeakService : Service() {
                     )
                 } else {
                     _pipelineState.value = PipelineState.Idle
-                    stopSelf()
+                    stopSelfWithWakeWordGuard()
                 }
             } finally {
                 releasePlaybackWakeLock()
@@ -2307,6 +2309,72 @@ class SlothSpeakService : Service() {
      */
     fun acknowledgeWakeWordTrigger() {
         _wakeWordTriggered.value = false
+    }
+
+    /**
+     * Called by the ViewModel when the wake word detector is armed.
+     * Starts/keeps this service alive as a foreground MICROPHONE service so
+     * Android doesn't silence the AudioRecord session when the app backgrounds.
+     */
+    fun startWakeWordForeground() {
+        val micGranted = checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+        if (!micGranted) return  // mic not available, skip foregrounding
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.R) return
+
+        if (!wakeWordForegroundActive) {
+            wakeWordForegroundActive = true
+            Log.i(TAG, "Wake word foreground: starting MICROPHONE + MEDIA_PLAYBACK FGS")
+        }
+        val serviceType = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK or
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+        androidx.core.app.ServiceCompat.startForeground(
+            this, NOTIFICATION_ID,
+            createNotification("Listening for \"Hey Jarvis\"…"),
+            serviceType
+        )
+    }
+
+    /**
+     * Called by the ViewModel when the wake word detector is stopped.
+     * If no pipeline is active, stops the foreground service (and ourselves).
+     */
+    fun stopWakeWordForegroundIfIdle() {
+        val wasActive = wakeWordForegroundActive
+        wakeWordForegroundActive = false
+        if (!wasActive) return
+        Log.i(TAG, "Wake word foreground: stopped")
+        // If no pipeline is active, allow stopSelf to proceed naturally.
+        // If a pipeline IS active, it will stopSelf when it completes.
+        if (!isPipelineRunning && !hasActivePipeline()) {
+            stopSelf()
+        }
+    }
+
+    /**
+     * Guard called before every stopSelf() in pipeline-completion paths.
+     * If wake word foreground is active and no pipeline is running, re-assert
+     * the foreground instead of stopping, keeping the mic alive.
+     */
+    private fun stopSelfWithWakeWordGuard() {
+        if (wakeWordForegroundActive && !isPipelineRunning && !hasActivePipeline()) {
+            // Stay alive — wake word listening needs the foreground service
+            val micGranted = checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
+                PackageManager.PERMISSION_GRANTED
+            if (micGranted && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                val serviceType = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK or
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                androidx.core.app.ServiceCompat.startForeground(
+                    this, NOTIFICATION_ID,
+                    createNotification("Listening for \"Hey Jarvis\"…"),
+                    serviceType
+                )
+            } else {
+                stopSelf()
+            }
+            return
+        }
+        stopSelf()
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {

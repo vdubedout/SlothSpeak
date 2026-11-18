@@ -77,6 +77,10 @@ class WakeWordDetector(
 
     private var disabledForSession = false
     private var consecutiveFailures = 0
+    // Diagnostics: peak sample level and max classifier score, reset every 2s
+    private var diagMaxAbsSample: Int = 0
+    private var diagMaxScore: Float = 0.0f
+    private var diagLastLogMs: Long = 0L
 
     val isRunning: Boolean get() = running
     val wasDetected: Boolean get() = wakeWordDetected
@@ -175,10 +179,36 @@ class WakeWordDetector(
 
     // ---- Per-chunk pipeline ----
 
+    /** @return max absolute sample value in this chunk (for diagnostics) */
+    private fun updateAudioDiagnostics(chunk: kotlin.ShortArray): Int {
+        var peak = 0
+        for (i in 0 until FRAME_SIZE) {
+            val sampleVal = chunk[i].toInt()
+            val absolute = if (sampleVal < 0) -sampleVal else sampleVal
+            if (absolute > peak) peak = absolute
+        }
+        if (peak > diagMaxAbsSample) diagMaxAbsSample = peak
+        return peak
+    }
+
+    private fun maybeLogDiagnostics(score: Float) {
+        if (score > diagMaxScore) diagMaxScore = score
+        val now = System.currentTimeMillis()
+        if (now - diagLastLogMs < 2000L) return
+        diagLastLogMs = now
+        if (diagMaxAbsSample > 0 || diagMaxScore > 0.001f) {
+            Log.d(TAG, "audio peak=" + diagMaxAbsSample + ", max score=" + diagMaxScore)
+        }
+        diagMaxAbsSample = 0
+        diagMaxScore = 0.0f
+    }
+
     private suspend fun processChunk(chunk: kotlin.ShortArray) {
         if (System.currentTimeMillis() < refractoryUntilMs) return
 
         try {
+            // Diagnostics: track peak audio level
+            updateAudioDiagnostics(chunk)
             // ======== Step 1: Mel-spectrogram ========
             inputBytes.clear(); inputBytes.order(ByteOrder.LITTLE_ENDIAN)
             for (i in 0 until FRAME_SIZE) { inputBytes.putFloat(chunk[i].toFloat() / 32768.0f) }
@@ -256,6 +286,8 @@ class WakeWordDetector(
             val scoreBuf = wwRaw.getFloatBuffer()
             val probability = if (scoreBuf.capacity() > 0) scoreBuf.get(0) else 0.0f
             wwResult.close()
+
+            maybeLogDiagnostics(probability)
 
             if (probability >= PROB_THRESHOLD) {
                 wakeWordDetected = true
