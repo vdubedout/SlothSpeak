@@ -275,9 +275,11 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
                 }
             )
             detector.start()
-            // Store the detector ref AFTER start() completes init
+            // Once the detector is started, ensure the Service is running as foreground
+            // MICROPHONE so Android doesn't silence the AudioRecord when backgrounded.
             withContext(Dispatchers.Main) {
                 wakeWordDetector = detector
+                ensureServiceForWakeWord()
             }
         }
     }
@@ -290,6 +292,33 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
             Log.i(TAG, "Stopping wake word detector")
             wakeWordDetector!!.release()
             wakeWordDetector = null
+        }
+        // Release the foreground MICROPHONE service so Android can reclaim the mic
+        val svc = service
+        if (svc != null) {
+            svc.stopWakeWordForegroundIfIdle()
+        }
+    }
+
+    /**
+     * Ensures the SlothSpeakService is bound and running as foreground MICROPHONE
+     * to prevent Android from silencing the wake word detector's AudioRecord when
+     * the app backgrounds or the screen locks.
+     */
+    private fun ensureServiceForWakeWord() {
+        if (serviceBound && service != null) {
+            service!!.startWakeWordForeground()
+            return
+        }
+        // Service not bound yet — start it as foreground for wake word listening
+        viewModelScope.launch(Dispatchers.IO) {
+            val deferred = bindAndAwaitService()
+            try {
+                val svc = withTimeout(5_000) { deferred.await() }
+                svc.startWakeWordForeground()
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to bind service for wake word foreground", e)
+            }
         }
     }
 
