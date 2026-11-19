@@ -64,12 +64,16 @@ class WakeWordDetector(
     private var wakeWordDetected = false
     private var refractoryUntilMs: Long = 0
 
-    // Ring buffers
+    // Ring buffers (reference caps)
     private val melRing = ArrayDeque<kotlin.FloatArray>()
     private val embRing = ArrayDeque<kotlin.FloatArray>()
+    private val rawBuffer = kotlin.FloatArray(16000 * 10) // 10s raw audio ring
+    private var rawWritePos = 0
+    private var rawTotalWritten = 0
+    private var predictionCount = 0
 
-    // Pre-allocated I/O buffer
-    private val inputBytes = ByteBuffer.allocate(FRAME_SIZE * 4)
+    // Pre-allocated I/O buffer (1760 samples max input slice)
+    private val inputBytes = ByteBuffer.allocate((FRAME_SIZE + 480) * 4)
 
     // mel/embedding output copied here before close()
     private var melOutFloat: kotlin.FloatArray? = null
@@ -92,7 +96,7 @@ class WakeWordDetector(
         if (ortEnv == null) {
             if (!initializeOnnx()) { disabledForSession = true; return }
         }
-        wakeWordDetected = false; melRing.clear(); embRing.clear(); running = true
+        wakeWordDetected = false; melRing.clear(); embRing.clear(); rawWritePos = 0; rawTotalWritten = 0; predictionCount = 0; running = true
         detectScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         detectJob = detectScope!!.launch {
             try { runDetectionLoop() }
@@ -161,7 +165,7 @@ class WakeWordDetector(
     private suspend fun runDetectionLoop() {
         val bufSize = maxOf(AudioRecord.getMinBufferSize(16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT), FRAME_SIZE * 2)
         val readBuf = kotlin.ShortArray(bufSize)
-        audioRecord = try { AudioRecord(MediaRecorder.AudioSource.MIC, 16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufSize) }
+        audioRecord = try { AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, 16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufSize) }
         catch (e: Exception) { Log.e(TAG, "AudioRecord failed", e); running = false; return }
         try { audioRecord!!.startRecording() } catch (e: Exception) { Log.e(TAG, "Start failed", e); running = false; return }
 
@@ -204,55 +208,62 @@ class WakeWordDetector(
     }
 
     private suspend fun processChunk(chunk: kotlin.ShortArray) {
-        if (System.currentTimeMillis() < refractoryUntilMs) return
-
         try {
-            // Diagnostics: track peak audio level
             updateAudioDiagnostics(chunk)
-            // ======== Step 1: Mel-spectrogram ========
+            val env = ortEnv ?: return
+
+            // ---- Raw audio ring buffer (reference: openwakeword-android audioLoop) ----
+            for (i in 0 until FRAME_SIZE) {
+                rawBuffer[rawWritePos] = chunk[i].toFloat() // RAW int16 as float32
+                rawWritePos = (rawWritePos + 1) % rawBuffer.size
+            }
+            rawTotalWritten += FRAME_SIZE
+            if (rawTotalWritten < FRAME_SIZE + MEL_CONTEXT_SAMPLES) return
+
+            // Slice = last 1760 samples (1280 new + 480 overlap context)
+            val sliceLen = FRAME_SIZE + MEL_CONTEXT_SAMPLES
+            val audioSlice = kotlin.FloatArray(sliceLen)
+            var readPos = (rawWritePos - sliceLen + rawBuffer.size) % rawBuffer.size
+            for (i in 0 until sliceLen) { audioSlice[i] = rawBuffer[readPos]; readPos = (readPos + 1) % rawBuffer.size }
+
+            // ======== Step 1: Mel-spectrogram (input [1,1760], output [1,1,T,32]) ========
             inputBytes.clear(); inputBytes.order(ByteOrder.LITTLE_ENDIAN)
-            for (i in 0 until FRAME_SIZE) { inputBytes.putFloat(chunk[i].toFloat() / 32768.0f) }
+            for (i in 0 until sliceLen) { inputBytes.putFloat(audioSlice[i]) }
             inputBytes.rewind()
 
-            val env = ortEnv ?: return
-            val inputShape = makeLongArray(1L, FRAME_SIZE.toLong())
-            val melTensor = OnnxTensor.createTensor(env, inputBytes.asFloatBuffer(), inputShape)
+            val melTensor = OnnxTensor.createTensor(env, inputBytes.asFloatBuffer(), makeLongArray(1L, sliceLen.toLong()))
             val melResult = melSession!!.run(java.util.HashMap(mapOf(melInName to melTensor)))
             melTensor.close()
 
             val melRaw = melResult.get(melOutName).orElse(null) as? ai.onnxruntime.OnnxTensor
             if (melRaw == null) { melResult.close(); noteFailure("mel output tensor missing"); return }
-            val melBuf = melRaw.getFloatBuffer()
-            val melInfo = melRaw.getInfo()
-            val melShape = melInfo.getShape()
-            val timeDim = melShape[0].toInt()
-            val totalFloats = timeDim * 32
-
-            // Copy to Kotlin float array before close()
-            if (melOutFloat == null || melOutFloat!!.size < totalFloats) {
-                melOutFloat = kotlin.FloatArray(totalFloats)
-            }
-            melBuf.rewind()
+            val melShape = melRaw.getInfo().getShape()
+            val timeDim = melShape[2].toInt()   // runtime shape [1,1,T,bins]
+            val numBins = melShape[3].toInt()
+            val totalFloats = timeDim * numBins
+            if (melOutFloat == null || melOutFloat!!.size < totalFloats) { melOutFloat = kotlin.FloatArray(totalFloats) }
+            val melBuf = melRaw.getFloatBuffer(); melBuf.rewind()
             for (i in 0 until totalFloats) { melOutFloat!![i] = melBuf.get() }
             melResult.close()
 
-            // Append each 32-bin mel frame to ring
+            // Post-process per reference: /10 + 2 — REQUIRED before the embedding model
             for (t in 0 until timeDim) {
-                val off = t * 32
-                val frame = kotlin.FloatArray(32)
-                for (b in 0 until 32) { frame[b] = melOutFloat!![off + b] }
+                val off = t * numBins
+                val frame = kotlin.FloatArray(numBins)
+                for (b in 0 until numBins) { frame[b] = melOutFloat!![off + b] / 10.0f + 2.0f }
                 melRing.addLast(frame)
-                if (melRing.size > MEL_WINDOW) melRing.removeFirst()
+                if (melRing.size > MEL_BUFFER_MAX) melRing.removeFirst()
             }
             if (melRing.size < MEL_WINDOW) return
 
-            // ======== Step 2: Embedding model ========
-            val embBytes = ByteBuffer.allocate(MEL_WINDOW * 32 * 4).order(ByteOrder.LITTLE_ENDIAN)
-            for (f in melRing) { for (b in 0 until 32) { embBytes.putFloat(f[b]) } }
+            // ======== Step 2: Embedding on the LAST 76 mel frames ========
+            val embBytes = ByteBuffer.allocate(MEL_WINDOW * numBins * 4).order(ByteOrder.LITTLE_ENDIAN)
+            val startIdx = melRing.size - MEL_WINDOW
+            var skipped = 0
+            for (fr in melRing) { if (skipped++ < startIdx) continue; for (b in 0 until numBins) { embBytes.putFloat(fr[b]) } }
             embBytes.rewind()
 
-            val embShape = makeLongArray(1L, MEL_WINDOW.toLong(), 32L, 1L)
-            val embTensor = OnnxTensor.createTensor(env, embBytes.asFloatBuffer(), embShape)
+            val embTensor = OnnxTensor.createTensor(env, embBytes.asFloatBuffer(), makeLongArray(1L, MEL_WINDOW.toLong(), numBins.toLong(), 1L))
             val embResult = embSession!!.run(java.util.HashMap(mapOf(embInName to embTensor)))
             embTensor.close()
 
@@ -268,16 +279,20 @@ class WakeWordDetector(
             val embVec = kotlin.FloatArray(embLen)
             for (i in 0 until embLen) { embVec[i] = embOutFloat!![i] }
             embRing.addLast(embVec)
-            if (embRing.size > EMB_WINDOW) embRing.removeFirst()
+            if (embRing.size > EMB_BUFFER_MAX) embRing.removeFirst()
             if (embRing.size < EMB_WINDOW) return
 
-            // ======== Step 3: Wake word classifier ========
+            // ======== Step 3: Classifier (skip first 5 predictions per reference) ========
+            predictionCount++
+            if (predictionCount <= SKIP_INITIAL_PREDICTIONS) return
+
             val wwBytes = ByteBuffer.allocate(EMB_WINDOW * EMB_DIM * 4).order(ByteOrder.LITTLE_ENDIAN)
-            for (v in embRing) { for (i in 0 until EMB_DIM) { wwBytes.putFloat(v[i]) } }
+            val eStart = embRing.size - EMB_WINDOW
+            var eSkipped = 0
+            for (v in embRing) { if (eSkipped++ < eStart) continue; for (i in 0 until EMB_DIM) { wwBytes.putFloat(v[i]) } }
             wwBytes.rewind()
 
-            val wwShape = makeLongArray(1L, EMB_WINDOW.toLong(), EMB_DIM.toLong())
-            val wwTensor = OnnxTensor.createTensor(env, wwBytes.asFloatBuffer(), wwShape)
+            val wwTensor = OnnxTensor.createTensor(env, wwBytes.asFloatBuffer(), makeLongArray(1L, EMB_WINDOW.toLong(), EMB_DIM.toLong()))
             val wwResult = wwSession!!.run(java.util.HashMap(mapOf(wwInName to wwTensor)))
             wwTensor.close()
 
@@ -289,7 +304,7 @@ class WakeWordDetector(
 
             maybeLogDiagnostics(probability)
 
-            if (probability >= PROB_THRESHOLD) {
+            if (probability >= PROB_THRESHOLD && System.currentTimeMillis() >= refractoryUntilMs) {
                 wakeWordDetected = true
                 Log.i(TAG, "Wake word 'Hey Jarvis' detected! (score=$probability)")
                 refractoryUntilMs = System.currentTimeMillis() + REFRACTORY_MS
@@ -327,6 +342,10 @@ class WakeWordDetector(
         const val MEL_WINDOW = 76
         const val EMB_WINDOW = 16
         const val EMB_DIM = 96
+        const val MEL_CONTEXT_SAMPLES = 480 // reference: 160*3 STFT overlap
+        const val MEL_BUFFER_MAX = 970
+        const val EMB_BUFFER_MAX = 120
+        const val SKIP_INITIAL_PREDICTIONS = 5
         private const val MAX_CONSECUTIVE_FAILURES = 5
         private const val PROB_THRESHOLD = 0.5f
         private const val REFRACTORY_MS = 1000L
