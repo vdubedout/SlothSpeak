@@ -1,19 +1,27 @@
 package com.slothspeak.viewmodel
 
 import android.app.Application
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.slothspeak.api.ModelDiscovery
+import com.slothspeak.audio.FutoSttEngine
 import com.slothspeak.config.SystemPrompts
 import com.slothspeak.data.ApiKeyManager
 import com.slothspeak.data.CompatibleProviderConfig
 import com.slothspeak.data.CompatibleProviderManager
+import com.slothspeak.data.FutoSttLanguage
+import com.slothspeak.data.FutoSttModel
+import com.slothspeak.data.FutoSttModelManager
 import com.slothspeak.data.LlmProviderType
 import com.slothspeak.data.LlmProviderUiState
 import com.slothspeak.data.SttProviderUiState
 import com.slothspeak.data.TtsProviderUiState
 import com.slothspeak.data.db.SlothSpeakDatabase
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -24,7 +32,9 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     private val apiKeyManager = ApiKeyManager(application)
     private val compatibleProviderManager = CompatibleProviderManager(application)
+    private val futoModelManager = FutoSttModelManager(application)
     private val database = SlothSpeakDatabase.getInstance(application)
+    private var futoDownloadJob: Job? = null
 
     private val _state = MutableStateFlow(SettingsState())
     val state: StateFlow<SettingsState> = _state
@@ -59,6 +69,13 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         val sttModel: String = ApiKeyManager.DEFAULT_STT_MODEL_OPENAI,
         val sttBaseUrl: String = "https://api.openai.com/v1/",
         val sttProviders: List<SttProviderUiState> = emptyList(),
+        val futoSttLanguage: String = FutoSttLanguage.AUTO,
+        val futoModelInstalled: Boolean = false,
+        val futoModelDownloading: Boolean = false,
+        val futoModelImporting: Boolean = false,
+        val futoModelProgress: Float = 0f,
+        val futoModelTotalMb: Long = FutoSttModel.totalMegabytes,
+        val futoModelError: String? = null,
         // Wake word
         val wakeWordEnabled: Boolean = false,
         // TTS
@@ -79,6 +96,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch {
             val audioSize = withContext(Dispatchers.IO) { calculateAudioStorageSize() }
             val convCount = withContext(Dispatchers.IO) { database.conversationDao().getConversationCount() }
+            val futoStatus = withContext(Dispatchers.IO) { futoModelManager.status() }
             val llmProviders = buildLlmProviders()
             val sttProviders = buildSttProviders()
             val ttsProviders = buildTtsProviders()
@@ -108,6 +126,16 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                 hasSttApiKey = apiKeyManager.hasSttApiKey(),
                 sttModel = apiKeyManager.getSttModel(),
                 sttBaseUrl = apiKeyManager.getSttBaseUrl(),
+                futoSttLanguage = apiKeyManager.getFutoSttLanguage(),
+                futoModelInstalled = futoStatus.installed,
+                futoModelProgress = if (_state.value.futoModelDownloading ||
+                    _state.value.futoModelImporting
+                ) {
+                    _state.value.futoModelProgress
+                } else {
+                    futoStatus.progress
+                },
+                futoModelTotalMb = futoStatus.totalBytes / (1024L * 1024L),
                 ttsProvider = apiKeyManager.getTtsProvider(),
                 ttsModel = apiKeyManager.getTtsModel(),
                 ttsVoice = apiKeyManager.getTtsVoice(),
@@ -365,7 +393,33 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                 active = current == ApiKeyManager.STT_PROVIDER_CUSTOM,
                 hasKey = hasTogether,
                 status = if (customConfigured) "Custom endpoint" else "Not configured"
-            )
+            ),
+            futoSttProvider(current)
+        )
+    }
+
+    private fun futoSttProvider(current: String): SttProviderUiState {
+        val status = futoModelManager.status()
+        val language = apiKeyManager.getFutoSttLanguage()
+        return SttProviderUiState(
+            id = ApiKeyManager.STT_PROVIDER_FUTO,
+            displayName = "FUTO (on-device)",
+            description = "${FutoSttModel.DISPLAY_NAME} · English + French · offline",
+            model = if (status.installed) {
+                "${FutoSttModel.DISPLAY_NAME} · ${FutoSttLanguage.label(language)}"
+            } else {
+                FutoSttModel.DISPLAY_NAME
+            },
+            baseUrl = null,
+            configured = status.installed,
+            active = current == ApiKeyManager.STT_PROVIDER_FUTO,
+            hasKey = false,
+            status = if (status.installed) {
+                "Downloaded · ${FutoSttLanguage.label(language)} · no network needed"
+            } else {
+                "Model not downloaded (${FutoSttModel.totalMegabytes} MB)"
+            },
+            onDevice = true
         )
     }
 
@@ -672,6 +726,10 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     fun setSttProvider(id: String) {
         apiKeyManager.setSttProvider(id)
+        if (id != ApiKeyManager.STT_PROVIDER_FUTO) {
+            // Free the ~650 MB on-device model when it is no longer selected.
+            FutoSttEngine.releaseShared()
+        }
         refreshState()
     }
 
@@ -685,6 +743,142 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         apiKeyManager.setSttBaseUrl(url)
         _state.value = _state.value.copy(sttBaseUrl = url)
         refreshSpeechProviders()
+    }
+
+    fun setFutoSttLanguage(language: String) {
+        apiKeyManager.setFutoSttLanguage(language)
+        _state.value = _state.value.copy(futoSttLanguage = language)
+        refreshSpeechProviders()
+    }
+
+    fun downloadFutoSttModel() {
+        if (_state.value.futoModelDownloading || _state.value.futoModelImporting) return
+        futoDownloadJob?.cancel()
+        FutoSttEngine.releaseShared()
+        _state.value = _state.value.copy(
+            futoModelDownloading = true,
+            futoModelImporting = false,
+            futoModelError = null,
+            futoModelProgress = 0f
+        )
+        futoDownloadJob = viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    futoModelManager.download { done, total ->
+                        _state.value = _state.value.copy(
+                            futoModelProgress = if (total > 0) {
+                                (done.toFloat() / total.toFloat()).coerceIn(0f, 1f)
+                            } else {
+                                0f
+                            },
+                            futoModelTotalMb = total / (1024L * 1024L)
+                        )
+                    }
+                }
+                _state.value = _state.value.copy(
+                    futoModelDownloading = false,
+                    futoModelImporting = false,
+                    futoModelInstalled = true,
+                    futoModelProgress = 1f,
+                    futoModelError = null
+                )
+            } catch (e: CancellationException) {
+                _state.value = _state.value.copy(
+                    futoModelDownloading = false,
+                    futoModelImporting = false
+                )
+                throw e
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    futoModelDownloading = false,
+                    futoModelImporting = false,
+                    futoModelError = e.message ?: "Model download failed"
+                )
+            } finally {
+                refreshSpeechProviders()
+            }
+        }
+    }
+
+    fun importFutoSttModel(treeUri: Uri) {
+        if (_state.value.futoModelDownloading || _state.value.futoModelImporting) return
+        futoDownloadJob?.cancel()
+        FutoSttEngine.releaseShared()
+        _state.value = _state.value.copy(
+            futoModelDownloading = false,
+            futoModelImporting = true,
+            futoModelError = null,
+            futoModelProgress = 0f
+        )
+        futoDownloadJob = viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    futoModelManager.importFromFolder(treeUri) { done, total ->
+                        _state.value = _state.value.copy(
+                            futoModelProgress = if (total > 0) {
+                                (done.toFloat() / total.toFloat()).coerceIn(0f, 1f)
+                            } else {
+                                0f
+                            }
+                        )
+                    }
+                }
+                _state.value = _state.value.copy(
+                    futoModelDownloading = false,
+                    futoModelImporting = false,
+                    futoModelInstalled = true,
+                    futoModelProgress = 1f,
+                    futoModelError = null
+                )
+            } catch (e: CancellationException) {
+                _state.value = _state.value.copy(
+                    futoModelDownloading = false,
+                    futoModelImporting = false
+                )
+                throw e
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    futoModelDownloading = false,
+                    futoModelImporting = false,
+                    futoModelError = e.message ?: "Model import failed"
+                )
+            } finally {
+                refreshSpeechProviders()
+            }
+        }
+    }
+
+    fun deleteFutoSttModel() {
+        // The UI only offers delete when idle; ignore spurious calls mid-download
+        // so an in-flight write cannot race with directory deletion.
+        if (_state.value.futoModelDownloading || _state.value.futoModelImporting) return
+        futoDownloadJob?.cancel()
+        futoDownloadJob = null
+        FutoSttEngine.releaseShared()
+        futoModelManager.delete()
+        _state.value = _state.value.copy(
+            futoModelInstalled = false,
+            futoModelDownloading = false,
+            futoModelImporting = false,
+            futoModelProgress = 0f,
+            futoModelError = null
+        )
+        refreshSpeechProviders()
+    }
+
+    fun cancelFutoSttDownload() {
+        val job = futoDownloadJob ?: return
+        futoDownloadJob = null
+        viewModelScope.launch {
+            job.cancelAndJoin()
+            _state.value = _state.value.copy(
+                futoModelDownloading = false,
+                futoModelImporting = false,
+                futoModelProgress = futoModelManager.status().progress,
+                futoModelError = null
+            )
+            refreshSpeechProviders()
+        }
     }
 
     // ============================================================

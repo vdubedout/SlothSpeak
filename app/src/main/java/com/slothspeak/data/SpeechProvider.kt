@@ -16,7 +16,8 @@ data class SttProviderUiState(
     val configured: Boolean,
     val active: Boolean,
     val hasKey: Boolean,
-    val status: String
+    val status: String,
+    val onDevice: Boolean = false
 )
 
 data class TtsProviderUiState(

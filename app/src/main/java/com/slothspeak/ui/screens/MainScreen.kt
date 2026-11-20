@@ -479,7 +479,20 @@ fun MainScreen(
                     audioRecorder = viewModel.audioRecorder,
                     onStop = { viewModel.stopRecording() },
                     isInteractive = uiState.isInteractiveRecording,
-                    vadSpeechDetected = uiState.vadSpeechDetected
+                    vadSpeechDetected = uiState.vadSpeechDetected,
+                    streaming = StreamingCaptureUi(
+                        isStreaming = uiState.isStreamingTranscription,
+                        modelLoading = uiState.streamingModelLoading,
+                        text = uiState.streamingText,
+                        error = uiState.streamingError,
+                        durationMs = uiState.recordingDurationMs,
+                        isEditing = uiState.isEditingTranscript,
+                        editableText = uiState.editableTranscript,
+                        autoSendRemainingMs = uiState.autoSendRemainingMs
+                    ),
+                    onTranscriptChange = { viewModel.updateStreamingTranscript(it) },
+                    onSendTranscript = { viewModel.sendStreamingTranscript() },
+                    onCancelTranscript = { viewModel.cancelStreamingTranscript() }
                 )
             }
         }

@@ -326,11 +326,26 @@ class ApiKeyManager(context: Context) {
         )
     }
 
+    /**
+     * Language for the on-device FUTO/Nemotron provider. Passed per stream,
+     * so switching languages does not reload the model.
+     */
+    fun getFutoSttLanguage(): String {
+        return prefs.getString(KEY_FUTO_STT_LANGUAGE, FutoSttLanguage.AUTO)
+            ?: FutoSttLanguage.AUTO
+    }
+
+    fun setFutoSttLanguage(language: String) {
+        prefs.edit().putString(KEY_FUTO_STT_LANGUAGE, language).apply()
+    }
+
     data class SttConfig(
         val baseUrl: String,
         val apiKey: String?,
         val model: String,
-        val providerLabel: String
+        val providerLabel: String,
+        val providerId: String = STT_PROVIDER_OPENAI,
+        val onDevice: Boolean = false
     )
 
     // ============================================================
@@ -462,23 +477,27 @@ class ApiKeyManager(context: Context) {
         const val STT_PROVIDER_OPENAI = "openai"
         const val STT_PROVIDER_TOGETHER = "together"
         const val STT_PROVIDER_CUSTOM = "custom"
+        const val STT_PROVIDER_FUTO = "futo"
 
         private const val KEY_STT_PROVIDER = "stt_provider"
         private const val KEY_STT_API_KEY = "stt_api_key"
         private const val KEY_STT_BASE_URL = "stt_base_url"
         private const val KEY_STT_MODEL_PREFIX = "stt_model_"
+        private const val KEY_FUTO_STT_LANGUAGE = "futo_stt_language"
 
         const val OPENAI_BASE_URL = "https://api.openai.com/v1/"
         const val TOGETHER_BASE_URL = "https://api.together.ai/v1/"
 
         const val DEFAULT_STT_MODEL_OPENAI = "gpt-4o-transcribe"
         const val DEFAULT_STT_MODEL_TOGETHER = "openai/whisper-large-v3"
+        const val DEFAULT_STT_MODEL_FUTO = FutoSttModel.ID
 
         private fun sttModelKey(provider: String): String = "${KEY_STT_MODEL_PREFIX}$provider"
 
         private fun defaultSttModel(provider: String): String = when (provider) {
             STT_PROVIDER_OPENAI -> DEFAULT_STT_MODEL_OPENAI
             STT_PROVIDER_TOGETHER -> DEFAULT_STT_MODEL_TOGETHER
+            STT_PROVIDER_FUTO -> DEFAULT_STT_MODEL_FUTO
             STT_PROVIDER_CUSTOM -> ""
             else -> DEFAULT_STT_MODEL_OPENAI
         }
@@ -486,6 +505,7 @@ class ApiKeyManager(context: Context) {
         private fun defaultSttBaseUrl(provider: String): String = when (provider) {
             STT_PROVIDER_OPENAI -> OPENAI_BASE_URL
             STT_PROVIDER_TOGETHER -> TOGETHER_BASE_URL
+            STT_PROVIDER_FUTO -> ""
             STT_PROVIDER_CUSTOM -> ""
             else -> OPENAI_BASE_URL
         }
@@ -607,25 +627,37 @@ class ApiKeyManager(context: Context) {
                     baseUrl = OPENAI_BASE_URL,
                     apiKey = openaiApiKey,
                     model = sttModel.ifBlank { DEFAULT_STT_MODEL_OPENAI },
-                    providerLabel = "OpenAI"
+                    providerLabel = "OpenAI",
+                    providerId = STT_PROVIDER_OPENAI
                 )
                 STT_PROVIDER_TOGETHER -> SttConfig(
                     baseUrl = TOGETHER_BASE_URL,
                     apiKey = sttApiKey?.takeIf { it.isNotBlank() },
                     model = sttModel.ifBlank { DEFAULT_STT_MODEL_TOGETHER },
-                    providerLabel = "Together"
+                    providerLabel = "Together",
+                    providerId = STT_PROVIDER_TOGETHER
+                )
+                STT_PROVIDER_FUTO -> SttConfig(
+                    baseUrl = "",
+                    apiKey = null,
+                    model = DEFAULT_STT_MODEL_FUTO,
+                    providerLabel = "FUTO",
+                    providerId = STT_PROVIDER_FUTO,
+                    onDevice = true
                 )
                 STT_PROVIDER_CUSTOM -> SttConfig(
                     baseUrl = sttBaseUrl.ifBlank { "" },
                     apiKey = sttApiKey?.takeIf { it.isNotBlank() },
                     model = sttModel,
-                    providerLabel = "Custom"
+                    providerLabel = "Custom",
+                    providerId = STT_PROVIDER_CUSTOM
                 )
                 else -> SttConfig(
                     baseUrl = OPENAI_BASE_URL,
                     apiKey = openaiApiKey,
                     model = sttModel.ifBlank { DEFAULT_STT_MODEL_OPENAI },
-                    providerLabel = "OpenAI"
+                    providerLabel = "OpenAI",
+                    providerId = STT_PROVIDER_OPENAI
                 )
             }
         }

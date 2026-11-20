@@ -15,6 +15,7 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "1.0"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
@@ -52,6 +53,17 @@ android {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
+        // sherpa-onnx bundles the only ONNX Runtime copy in the APK. The
+        // wake-word JNI library comes from app/src/main/jniLibs and is built
+        // against the same 1.28.2 runtime.
+        jniLibs {
+            // Only the JNI wrapper is used by the app; the C/C++ API
+            // libraries add ~24 MB across ABIs and are not needed.
+            excludes += setOf(
+                "**/libsherpa-onnx-c-api.so",
+                "**/libsherpa-onnx-cxx-api.so"
+            )
+        }
     }
 }
 
@@ -80,6 +92,9 @@ dependencies {
     // Core
     implementation("androidx.core:core-ktx:1.12.0")
 
+    // SAF folder import for on-device models
+    implementation("androidx.documentfile:documentfile:1.0.1")
+
     // Networking - OkHttp + Retrofit
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
@@ -102,11 +117,21 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 
     // Silero VAD (Voice Activity Detection)
-    implementation("com.github.gkonovalov.android-vad:silero:2.0.10")
+    implementation("com.github.gkonovalov.android-vad:silero:2.0.10") {
+        // We supply the ONNX Runtime build that matches sherpa-onnx (1.28.2).
+        exclude(group = "com.microsoft.onnxruntime", module = "onnxruntime-android")
+    }
 
-    // ONNX Runtime — for openWakeWord on-device detection
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.22.0")
+    // ONNX Runtime Java API + JNI — for openWakeWord on-device detection.
+    // Pinned to 1.28.2 to match the ONNX Runtime build bundled with
+    // sherpa-onnx 2.0.2 (mixing versions fails to resolve OrtGetApiBase).
+    implementation(files("libs/onnxruntime-android-1.28.2.jar"))
 
+    // sherpa-onnx — on-device streaming STT (Nemotron 3.5 multilingual)
+    // Vendored AAR: sherpa-onnx does not publish to Maven Central. It also
+    // supplies libonnxruntime.so (1.28.2); the Java/WakeWord JNI libs live in
+    // app/src/main/jniLibs.
+    implementation(files("libs/sherpa-onnx-2.0.2.aar"))
     // Test dependencies
     testImplementation("org.robolectric:robolectric:4.18")
     testImplementation("io.github.takahirom.roborazzi:roborazzi:1.79.0")
@@ -115,4 +140,9 @@ dependencies {
     testImplementation("androidx.compose.ui:ui-test-junit4")
     testImplementation("androidx.test.ext:junit:1.2.1")
     testImplementation("androidx.test:core:1.6.1")
+
+    // Instrumentation smoke test for the on-device STT model (real phone)
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test:core:1.6.1")
 }

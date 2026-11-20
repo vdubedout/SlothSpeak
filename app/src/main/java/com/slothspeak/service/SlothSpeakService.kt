@@ -29,6 +29,7 @@ import com.slothspeak.api.OpenAIClient
 import com.slothspeak.audio.AudioFocusManager
 import com.slothspeak.audio.AudioPlayer
 import com.slothspeak.audio.BluetoothAudioRouter
+import com.slothspeak.audio.FutoSttEngine
 import com.slothspeak.audio.OpenAiCompatibleTtsSynthesizer
 import com.slothspeak.audio.OnDeviceTtsSynthesizer
 import com.slothspeak.audio.TtsProcessor
@@ -37,6 +38,7 @@ import com.slothspeak.audio.VadAudioRecorder
 import com.slothspeak.audio.WakeWordDetector
 import com.slothspeak.data.ApiKeyManager
 import com.slothspeak.data.CompatibleProviderManager
+import com.slothspeak.data.FutoSttModelManager
 import com.slothspeak.data.db.SlothSpeakDatabase
 import com.slothspeak.data.db.entities.Conversation
 import com.slothspeak.data.db.entities.QAPair
@@ -532,6 +534,35 @@ class SlothSpeakService : Service() {
         }
     }
 
+    /**
+     * Transcribe a recording with the active STT provider. The FUTO provider
+     * runs locally through sherpa-onnx; everything else stays on the existing
+     * OpenAI-compatible HTTP path.
+     */
+    private suspend fun transcribeAudio(audioFile: File): String {
+        val config = apiKeyManager.getEffectiveSttConfig()
+        if (!config.onDevice ||
+            config.providerId != ApiKeyManager.STT_PROVIDER_FUTO
+        ) {
+            return openAIClient.transcribeAudio(audioFile)
+        }
+
+        val modelInstalled = withContext(Dispatchers.IO) {
+            FutoSttModelManager(applicationContext).isInstalled()
+        }
+        if (!modelInstalled) {
+            throw ApiException(
+                "On-device STT model is not downloaded. Open Settings → " +
+                    "Speech-to-Text → FUTO to download it.",
+                0,
+                false
+            )
+        }
+
+        return FutoSttEngine.get(applicationContext)
+            .transcribe(audioFile, apiKeyManager.getFutoSttLanguage())
+    }
+
     private suspend fun runPipeline(
         audioFile: File,
         existingConversationId: Long?,
@@ -559,7 +590,7 @@ class SlothSpeakService : Service() {
 
         val questionText: String
         try {
-            questionText = openAIClient.transcribeAudio(audioFile)
+            questionText = transcribeAudio(audioFile)
         } catch (e: Exception) {
             handleError(e, FailedStep.TRANSCRIPTION, audioFile = audioFile)
             return
@@ -1643,7 +1674,7 @@ class SlothSpeakService : Service() {
         val questionText: String
         try {
             emitProcessingState(PipelineState.Transcribing, "Transcribing follow-up...")
-            questionText = openAIClient.transcribeAudio(audioFile)
+            questionText = transcribeAudio(audioFile)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to transcribe follow-up audio", e)
             endInteractiveConversation(conversationId)
@@ -1696,6 +1727,9 @@ class SlothSpeakService : Service() {
         val isGemini = model == ApiKeyManager.MODEL_GEMINI_PRO || model == ApiKeyManager.MODEL_GEMINI_PRO_35
         val isClaude = model == ApiKeyManager.MODEL_CLAUDE_OPUS
         val isGrok = model == ApiKeyManager.MODEL_GROK
+        val isDeepResearch = model == ApiKeyManager.MODEL_DEEP_RESEARCH
+        val isGeminiDeepResearch = model == ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH
+        val isAnyDeepResearch = isDeepResearch || isGeminiDeepResearch
         val compatId = apiKeyManager.getSelectedCompatProviderId()
         val isCompat = compatId != null && compatibleProviderManager.getProvider(compatId) != null
         val compatProvider = if (isCompat) compatibleProviderManager.getProvider(compatId!!) else null
@@ -1738,18 +1772,22 @@ class SlothSpeakService : Service() {
             else -> ""
         }
         val providerName = when {
+            isDeepResearch -> "Deep Research"
+            isGeminiDeepResearch -> "Gemini Deep Research"
             isCompat && compatProvider != null -> compatProvider.displayName
             isClaude -> "Claude"
             isGemini -> "Gemini"
             isGrok -> "Grok"
             else -> "OpenAI"
         }
+        val thinkingLabel = if (isAnyDeepResearch) "Researching" else "Thinking"
         emitProcessingState(
             PipelineState.Thinking(
                 questionText = questionText,
                 reasoningEffort = effortLabel,
                 statusMessage = "Sending request to $providerName...",
-                elapsedSeconds = 0
+                elapsedSeconds = 0,
+                thinkingLabel = thinkingLabel
             ),
             "Sending request..."
         )
@@ -1766,7 +1804,7 @@ class SlothSpeakService : Service() {
                             statusMessage = "Waiting for response...",
                             elapsedSeconds = seconds
                         ),
-                        "Thinking${if (effortLabel.isNotEmpty()) " ($effortLabel)" else ""}... ${seconds}s"
+                        "$thinkingLabel${if (effortLabel.isNotEmpty()) " ($effortLabel)" else ""}... ${seconds}s"
                     )
                 } else {
                     break
@@ -1779,7 +1817,24 @@ class SlothSpeakService : Service() {
         lastReasoningText = null
         val llmStartTime = System.currentTimeMillis()
         try {
-            if (isClaude) {
+            if (isDeepResearch) {
+                val llmResponse = openAIClient.createDeepResearch(questionText)
+                timerJob.cancel()
+                lastLlmResponseSeconds = ((System.currentTimeMillis() - llmStartTime) / 1000).toInt()
+                lastReasoningEffort = null
+                val citationResult = openAIClient.extractAnswerText(llmResponse)
+                answerText = citationResult.cleanText
+                lastAnswerTextRich = citationResult.richText
+                responseId = llmResponse.id
+            } else if (isGeminiDeepResearch) {
+                val result = geminiClient.createDeepResearch(questionText)
+                timerJob.cancel()
+                lastLlmResponseSeconds = ((System.currentTimeMillis() - llmStartTime) / 1000).toInt()
+                lastReasoningEffort = null
+                answerText = result.answerText
+                lastAnswerTextRich = null
+                responseId = result.responseId
+            } else if (isClaude) {
                 val history = if (existingConversationId != null) {
                     withContext(Dispatchers.IO) {
                         database.conversationDao()

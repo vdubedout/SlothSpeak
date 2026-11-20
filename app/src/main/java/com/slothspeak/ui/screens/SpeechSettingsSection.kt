@@ -1,5 +1,8 @@
 package com.slothspeak.ui.screens
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -26,6 +29,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -45,6 +49,8 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.slothspeak.data.ApiKeyManager
+import com.slothspeak.data.FutoSttLanguage
+import com.slothspeak.data.FutoSttModel
 import com.slothspeak.data.SttProviderUiState
 import com.slothspeak.data.TtsProviderUiState
 import com.slothspeak.ui.theme.AccentGreen
@@ -58,14 +64,32 @@ import com.slothspeak.ui.theme.TextSecondary
 @Composable
 fun SttSettingsSection(
     providers: List<SttProviderUiState>,
+    futoLanguage: String = FutoSttLanguage.AUTO,
+    futoModelInstalled: Boolean = false,
+    futoModelDownloading: Boolean = false,
+    futoModelImporting: Boolean = false,
+    futoModelProgress: Float = 0f,
+    futoModelTotalMb: Long = FutoSttModel.totalMegabytes,
+    futoModelError: String? = null,
     onSetProvider: (String) -> Unit,
     onSaveKey: (String) -> Unit,
     onDeleteKey: () -> Unit,
     onSetModel: (String) -> Unit,
-    onSetBaseUrl: (String) -> Unit
+    onSetBaseUrl: (String) -> Unit,
+    onSetFutoLanguage: (String) -> Unit = {},
+    onDownloadFutoModel: () -> Unit = {},
+    onCancelFutoDownload: () -> Unit = {},
+    onImportFutoModel: (Uri) -> Unit = {},
+    onDeleteFutoModel: () -> Unit = {}
 ) {
     var dialogOpen by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<SttProviderUiState?>(null) }
+
+    val folderPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) onImportFutoModel(uri)
+    }
 
     val active = providers.firstOrNull { it.active }
     val configuredOthers = providers.filter { it.configured && !it.active }
@@ -109,6 +133,13 @@ fun SttSettingsSection(
         SttProviderDialog(
             editing = editing,
             providers = providers,
+            futoLanguage = futoLanguage,
+            futoModelInstalled = futoModelInstalled,
+            futoModelDownloading = futoModelDownloading,
+            futoModelImporting = futoModelImporting,
+            futoModelProgress = futoModelProgress,
+            futoModelTotalMb = futoModelTotalMb,
+            futoModelError = futoModelError,
             onDismiss = {
                 dialogOpen = false
                 editing = null
@@ -116,7 +147,11 @@ fun SttSettingsSection(
             onSave = { id, key, model, baseUrl ->
                 onSetProvider(id)
                 if (id == ApiKeyManager.STT_PROVIDER_CUSTOM) onSetBaseUrl(baseUrl)
-                if (id != ApiKeyManager.STT_PROVIDER_OPENAI) onSetModel(model)
+                if (id != ApiKeyManager.STT_PROVIDER_OPENAI &&
+                    id != ApiKeyManager.STT_PROVIDER_FUTO
+                ) {
+                    onSetModel(model)
+                }
                 if (!key.isNullOrBlank()) onSaveKey(key)
                 dialogOpen = false
                 editing = null
@@ -125,7 +160,12 @@ fun SttSettingsSection(
                 onDeleteKey()
                 dialogOpen = false
                 editing = null
-            }
+            },
+            onSetFutoLanguage = onSetFutoLanguage,
+            onDownloadFutoModel = onDownloadFutoModel,
+            onCancelFutoDownload = onCancelFutoDownload,
+            onChooseFutoFolder = { folderPicker.launch(null) },
+            onDeleteFutoModel = onDeleteFutoModel
         )
     }
 }
@@ -361,9 +401,21 @@ private data class SttFormSeed(val model: String, val baseUrl: String)
 private fun SttProviderDialog(
     editing: SttProviderUiState?,
     providers: List<SttProviderUiState>,
+    futoLanguage: String,
+    futoModelInstalled: Boolean,
+    futoModelDownloading: Boolean,
+    futoModelImporting: Boolean,
+    futoModelProgress: Float,
+    futoModelTotalMb: Long,
+    futoModelError: String?,
     onDismiss: () -> Unit,
     onSave: (id: String, key: String?, model: String, baseUrl: String) -> Unit,
-    onRemoveKey: () -> Unit
+    onRemoveKey: () -> Unit,
+    onSetFutoLanguage: (String) -> Unit,
+    onDownloadFutoModel: () -> Unit,
+    onCancelFutoDownload: () -> Unit,
+    onChooseFutoFolder: () -> Unit,
+    onDeleteFutoModel: () -> Unit
 ) {
     var selectedId by remember { mutableStateOf(editing?.id) }
     val selected = providers.firstOrNull { it.id == selectedId }
@@ -419,9 +471,11 @@ private fun SttProviderDialog(
 
     val isOpenAi = id == ApiKeyManager.STT_PROVIDER_OPENAI
     val isCustom = id == ApiKeyManager.STT_PROVIDER_CUSTOM
+    val isFuto = id == ApiKeyManager.STT_PROVIDER_FUTO
     val requiresKey = id == ApiKeyManager.STT_PROVIDER_TOGETHER && selected?.configured != true
     val canSave = when {
         isOpenAi -> true
+        isFuto -> true
         isCustom -> baseUrl.isNotBlank() && model.isNotBlank()
         else -> model.isNotBlank() && (!requiresKey || apiKey.isNotBlank())
     }
@@ -449,6 +503,157 @@ private fun SttProviderDialog(
                             modifier = Modifier.padding(top = 4.dp)
                         )
                     }
+                } else if (isFuto) {
+                    Text(
+                        "Runs entirely on your phone. No API key and no network " +
+                            "needed while transcribing.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TextSecondary
+                    )
+                    Text(
+                        FutoSttModel.DETAIL,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        "Language",
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FutoSttLanguage.options.forEach { (value, label) ->
+                            val selectedLanguage = futoLanguage == value
+                            if (selectedLanguage) {
+                                Button(
+                                    onClick = { onSetFutoLanguage(value) },
+                                    modifier = Modifier.weight(1f),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = AccentGreen
+                                    )
+                                ) {
+                                    Text(label, maxLines = 1)
+                                }
+                            } else {
+                                OutlinedButton(
+                                    onClick = { onSetFutoLanguage(value) },
+                                    modifier = Modifier.weight(1f),
+                                    colors = ButtonDefaults.outlinedButtonColors(
+                                        contentColor = TextSecondary
+                                    )
+                                ) {
+                                    Text(label, maxLines = 1)
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        "Model",
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                    Text(
+                        "${FutoSttModel.DISPLAY_NAME} · $futoModelTotalMb MB",
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                    Text(
+                        FutoSttModel.IMPORT_HINT,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                    if (!futoModelInstalled && !futoModelDownloading && !futoModelImporting) {
+                        Text(
+                            "Keep SlothSpeak open while downloading. Partial downloads resume.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary,
+                            modifier = Modifier.padding(top = 2.dp)
+                        )
+                    }
+
+                    val futoBusy = futoModelDownloading || futoModelImporting
+                    if (futoBusy) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        LinearProgressIndicator(
+                            progress = futoModelProgress,
+                            color = AccentGreen,
+                            trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Text(
+                            (if (futoModelImporting) "Importing… " else "Downloading… ") +
+                                "${(futoModelProgress * 100).toInt()}%",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary,
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                        TextButton(onClick = onCancelFutoDownload) {
+                            Text(
+                                if (futoModelImporting) "Cancel import" else "Cancel download",
+                                color = ErrorRed
+                            )
+                        }
+                    } else if (futoModelInstalled) {
+                        Text(
+                            "Model ready — usable offline",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = AccentGreen,
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                        TextButton(onClick = onChooseFutoFolder) {
+                            Text("Replace from folder", color = AccentGreen)
+                        }
+                        TextButton(onClick = onDeleteFutoModel) {
+                            Text("Delete model", color = ErrorRed)
+                        }
+                    } else {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Button(
+                            onClick = onDownloadFutoModel,
+                            colors = ButtonDefaults.buttonColors(containerColor = AccentGreen),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Download model ($futoModelTotalMb MB)")
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        OutlinedButton(
+                            onClick = onChooseFutoFolder,
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = AccentGreen)
+                        ) {
+                            Text("Import model folder")
+                        }
+                    }
+
+                    if (!futoModelError.isNullOrBlank()) {
+                        Text(
+                            futoModelError,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = ErrorRed,
+                            modifier = Modifier.padding(top = 8.dp)
+                        )
+                    }
+                    if (!futoModelInstalled && !futoBusy) {
+                        Text(
+                            "The model must be downloaded or imported before this " +
+                                "provider can transcribe.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = ErrorRed,
+                            modifier = Modifier.padding(top = 8.dp)
+                        )
+                    }
+                    Text(
+                        "FUTO Keyboard and FUTO Voice Input use private GGUF/.bin " +
+                            "models; sherpa-onnx can't load those. Pick the ONNX " +
+                            "export above instead.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
                 } else {
                     if (isCustom) {
                         OutlinedTextField(
@@ -783,6 +988,7 @@ private fun TtsModelVoiceFields(
 private fun sttDefaultModel(id: String): String = when (id) {
     ApiKeyManager.STT_PROVIDER_OPENAI -> ApiKeyManager.DEFAULT_STT_MODEL_OPENAI
     ApiKeyManager.STT_PROVIDER_TOGETHER -> ApiKeyManager.DEFAULT_STT_MODEL_TOGETHER
+    ApiKeyManager.STT_PROVIDER_FUTO -> ApiKeyManager.DEFAULT_STT_MODEL_FUTO
     else -> ""
 }
 

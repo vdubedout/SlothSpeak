@@ -24,6 +24,8 @@ There is no server backend. The app calls AI provider APIs directly from the dev
 
 **Multi-provider AI** — Four built-in providers, eight models, plus generic OpenAI-compatible provider support. Switch between OpenAI GPT-5.5, Gemini 3.1 Pro, Claude Opus 4.8, Grok 4.3, Z.ai GLM 5.3, DeepSeek V4 Flash, or any self-hosted OpenAI-compatible API (Qwen via vLLM/Ollama/LM Studio). GPT-5.5 Pro, Gemini, and Claude support configurable reasoning effort/thinking level.
 
+**On-device streaming STT (English + French)** — Pick FUTO (on-device) as the Speech-to-Text provider to transcribe locally with the Nemotron 3.5 multilingual streaming model via sherpa-onnx. Audio is transcribed live while you speak: the capture screen shows the words as they arrive, then lets you review/edit the transcript with a character counter before it is sent to the LLM (auto-sends 2 seconds after your last edit). Download the ~650 MB model once, or import an existing sherpa-onnx model folder (encoder/decoder/joiner ONNX + tokens.txt). After that no API key and no network are needed for transcription. English, French, or automatic language selection.
+
 **Multi-turn conversations** — Ask follow-up questions with full context. OpenAI and Grok chain via `previous_response_id`; Gemini and Claude send explicit conversation history.
 
 **Interactive voice mode** — Hands-free continuous conversation using on-device voice activity detection (Silero VAD). After an answer plays back, the app asks "Do you have a follow-up?" and listens for the next question. Say "no", "I'm done", or stay silent to end the conversation.
@@ -77,7 +79,17 @@ There is no server backend. The app calls AI provider APIs directly from the dev
 | Anthropic | Claude Opus 4.8 | `claude-opus-4-8` | Adaptive thinking, effort (low/medium/high/max) |
 | xAI | Grok 4.3 | `grok-4.3` | Optional X (Twitter) search |
 
-Each provider requires its own API key, configured in Settings. All providers use OpenAI for STT and TTS, so an OpenAI API key is always required.
+Each provider requires its own API key, configured in Settings. Speech-to-Text can use OpenAI, Together, any OpenAI-compatible endpoint, or the on-device FUTO provider (no key). Text-to-Speech can use OpenAI, Together, a custom endpoint, or the Android system engine.
+
+### On-device STT model
+
+The FUTO provider runs [NVIDIA Nemotron 3.5 ASR Streaming](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b) (0.6B, multilingual) through [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx). The 560 ms int8 ONNX export is downloaded on demand (~650 MB) from Hugging Face and can be deleted from Settings.
+
+While you speak, microphone frames are fed to the recognizer in 320 ms chunks and partial text streams onto the capture screen. Stopping the recording opens a review step with an editable transcript and a live character counter; the question is sent to the LLM 2 seconds after the last edit, or immediately via **Send now**. If live recognition returns no text, the recorded WAV is sent through the regular batch transcription path so the question is not lost.
+
+If you already have the model on the device, choose **Import model folder** and pick the directory containing `encoder.int8.onnx` (or `encoder.onnx`), `decoder.int8.onnx`, `joiner.int8.onnx`, and `tokens.txt`. The files are copied into app storage and renamed to the canonical names. FUTO Keyboard and FUTO Voice Input use private GGUF/`.bin` models, which sherpa-onnx cannot load, so those files cannot be reused directly.
+
+Model weights are licensed under OpenMDW 1.1; sherpa-onnx is Apache-2.0.
 
 ## Interactive Voice Mode
 
@@ -166,6 +178,8 @@ app/src/main/java/com/slothspeak/
 │   │                                    pauses for phone calls and other interruptions
 │   ├── BluetoothAudioRouter.kt          Routes mic input to Bluetooth headset (SCO + BLE),
 │   │                                    API 31+ setCommunicationDevice / legacy startBluetoothSco
+│   ├── FutoSttEngine.kt                 On-device sherpa-onnx streaming recognizer
+│   │                                    (Nemotron 3.5 multilingual, English + French)
 │   └── TtsProcessor.kt                  Parallel chunk TTS (3 concurrent via semaphore)
 │
 ├── config/
@@ -179,6 +193,8 @@ app/src/main/java/com/slothspeak/
 │   │                                    thinking level) used by the settings screen
 │   ├── SpeechProvider.kt                Compact STT/TTS provider UI models (active,
 │   │                                    configured, key status)
+│   ├── FutoSttModel.kt                  On-device model spec, language options, download/
+│   │                                    resume/delete manager (Hugging Face)
 │   ├── CompatibleProviders.kt           OpenAI-compatible provider configs + key storage
 │   └── db/
 │       ├── SlothSpeakDatabase.kt        Room database (singleton)
@@ -278,7 +294,7 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 - No transcription preview before the LLM call fires
 - TTS retry regenerates all chunks rather than only failed ones
 - No progressive playback (must wait for all TTS chunks before audio begins)
-- All providers use OpenAI for STT and TTS (requires an OpenAI API key regardless of selected model)
+- On-device STT requires a ~650 MB model (downloaded or imported); the streaming model is buffered over the finished VAD recording rather than shown live in the UI
 
 ## License
 

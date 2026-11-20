@@ -142,11 +142,23 @@ fun SettingsScreen(
             // Speech-to-Text Section
             SttSettingsSection(
                 providers = state.sttProviders,
+                futoLanguage = state.futoSttLanguage,
+                futoModelInstalled = state.futoModelInstalled,
+                futoModelDownloading = state.futoModelDownloading,
+                futoModelImporting = state.futoModelImporting,
+                futoModelProgress = state.futoModelProgress,
+                futoModelTotalMb = state.futoModelTotalMb,
+                futoModelError = state.futoModelError,
                 onSetProvider = { viewModel.setSttProvider(it) },
                 onSaveKey = { viewModel.saveSttApiKey(it) },
                 onDeleteKey = { viewModel.deleteSttApiKey() },
                 onSetModel = { viewModel.setSttModel(it) },
-                onSetBaseUrl = { viewModel.setSttBaseUrl(it) }
+                onSetBaseUrl = { viewModel.setSttBaseUrl(it) },
+                onSetFutoLanguage = { viewModel.setFutoSttLanguage(it) },
+                onDownloadFutoModel = { viewModel.downloadFutoSttModel() },
+                onCancelFutoDownload = { viewModel.cancelFutoSttDownload() },
+                onImportFutoModel = { viewModel.importFutoSttModel(it) },
+                onDeleteFutoModel = { viewModel.deleteFutoSttModel() }
             )
 
             Spacer(modifier = Modifier.height(24.dp))

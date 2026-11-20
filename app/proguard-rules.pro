@@ -67,3 +67,10 @@
 
 # Silero VAD
 -keep class com.konovalov.vad.** { *; }
+
+# sherpa-onnx (on-device streaming STT) — JNI resolves classes/methods by name
+-keep class com.k2fsa.sherpa.onnx.** { *; }
+-keepclasseswithmembernames class * {
+    native <methods>;
+}
+-dontwarn com.k2fsa.sherpa.onnx.**

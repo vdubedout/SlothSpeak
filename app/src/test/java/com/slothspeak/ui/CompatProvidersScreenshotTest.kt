@@ -12,6 +12,7 @@ import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.core.app.ApplicationProvider
 import com.github.takahirom.roborazzi.RoborazziRule
 import com.github.takahirom.roborazzi.RoborazziTaskType
 import com.github.takahirom.roborazzi.captureRoboImage
@@ -19,8 +20,11 @@ import com.slothspeak.data.ApiKeyManager
 import com.slothspeak.data.CompatibleProviderConfig
 import com.slothspeak.data.SttProviderUiState
 import com.slothspeak.data.TtsProviderUiState
+import com.slothspeak.audio.AudioRecorder
 import com.slothspeak.ui.components.QAPairCard
 import com.slothspeak.ui.screens.CompatProvidersList
+import com.slothspeak.ui.screens.RecordingOverlay
+import com.slothspeak.ui.screens.StreamingCaptureUi
 import com.slothspeak.ui.screens.SttSettingsSection
 import com.slothspeak.ui.screens.TextInputQuestionBar
 import com.slothspeak.ui.screens.TtsSettingsSection
@@ -421,5 +425,197 @@ the weather is most favorable and the city's parks and gardens are at their most
 
         // PNG capture
         rule.onRoot().captureRoboImage("build/ui-screenshots/settings_wakeWordSection.png")
+    }
+
+    // ========================
+    // FUTO on-device STT
+    // ========================
+
+    private fun futoProvider(
+        active: Boolean,
+        installed: Boolean,
+        model: String = "Nemotron 3.5 streaming · Français",
+        status: String = "Downloaded · Français · no network needed"
+    ) = SttProviderUiState(
+        id = ApiKeyManager.STT_PROVIDER_FUTO,
+        displayName = "FUTO (on-device)",
+        description = "Nemotron 3.5 streaming · English + French · offline",
+        model = model,
+        baseUrl = null,
+        configured = installed,
+        active = active,
+        hasKey = false,
+        status = if (installed) status else "Model not downloaded (650 MB)",
+        onDevice = true
+    )
+
+    private fun openAiProvider(active: Boolean) = SttProviderUiState(
+        id = ApiKeyManager.STT_PROVIDER_OPENAI,
+        displayName = "OpenAI",
+        description = "gpt-4o-transcribe · uses OpenAI key from LLM",
+        model = ApiKeyManager.DEFAULT_STT_MODEL_OPENAI,
+        baseUrl = null,
+        configured = true,
+        active = active,
+        hasKey = true,
+        status = "Using OpenAI key from LLM section"
+    )
+
+    @Test
+    fun settings_sttSection_futo_png() {
+        rule.setContent {
+            SlothSpeakTheme {
+                Surface(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        SttSettingsSection(
+                            providers = listOf(
+                                openAiProvider(active = false),
+                                futoProvider(active = true, installed = true)
+                            ),
+                            futoLanguage = "fr",
+                            futoModelInstalled = true,
+                            futoModelProgress = 1f,
+                            onSetProvider = {},
+                            onSaveKey = {},
+                            onDeleteKey = {},
+                            onSetModel = {},
+                            onSetBaseUrl = {},
+                            onSetFutoLanguage = {},
+                            onDownloadFutoModel = {},
+                            onDeleteFutoModel = {}
+                        )
+                    }
+                }
+            }
+        }
+        rule.waitForIdle()
+
+        rule.onNodeWithText("FUTO (on-device)").assertIsDisplayed()
+        rule.onNodeWithText("Nemotron 3.5 streaming · Français").assertIsDisplayed()
+        rule.onNodeWithText("Downloaded · Français · no network needed").assertIsDisplayed()
+
+        rule.onRoot().captureRoboImage("build/ui-screenshots/settings_sttSection_futo.png")
+    }
+
+    @Test
+    fun settings_sttFutoDialog_png() {
+        rule.setContent {
+            SlothSpeakTheme {
+                Surface(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        SttSettingsSection(
+                            providers = listOf(
+                                openAiProvider(active = true),
+                                futoProvider(active = false, installed = false, model = "")
+                            ),
+                            futoLanguage = "fr",
+                            futoModelInstalled = false,
+                            futoModelTotalMb = 650,
+                            onSetProvider = {},
+                            onSaveKey = {},
+                            onDeleteKey = {},
+                            onSetModel = {},
+                            onSetBaseUrl = {},
+                            onSetFutoLanguage = {},
+                            onDownloadFutoModel = {},
+                            onDeleteFutoModel = {}
+                        )
+                    }
+                }
+            }
+        }
+        rule.waitForIdle()
+
+        rule.onNodeWithText("Add provider").performClick()
+        rule.onNodeWithText("FUTO (on-device)").performClick()
+        rule.waitForIdle()
+
+        rule.onNodeWithText("Language").assertIsDisplayed()
+        rule.onNodeWithText("Français").assertIsDisplayed()
+        rule.onNodeWithText("Download model (650 MB)").assertIsDisplayed()
+        rule.onNodeWithText("Import model folder").assertExists()
+
+        rule.onRoot().captureRoboImage("build/ui-screenshots/settings_sttFutoDialog.png")
+    }
+
+    // ========================
+    //  Live (streaming) capture overlay
+    // ========================
+
+    @Test
+    fun recordingOverlay_streaming_png() {
+        val recorder = AudioRecorder(ApplicationProvider.getApplicationContext())
+        rule.setContent {
+            SlothSpeakTheme {
+                RecordingOverlay(
+                    audioRecorder = recorder,
+                    onStop = {},
+                    streaming = StreamingCaptureUi(
+                        isStreaming = true,
+                        text = "What is the best time of year to visit Tokyo?",
+                        durationMs = 7_400L
+                    )
+                )
+            }
+        }
+        rule.waitForIdle()
+
+        rule.onNodeWithText("Listening — live transcript").assertIsDisplayed()
+        rule.onNodeWithText("What is the best time of year to visit Tokyo?").assertIsDisplayed()
+        rule.onNodeWithText("Tap stop when you are done").assertIsDisplayed()
+
+        rule.onRoot().captureRoboImage("build/ui-screenshots/recordingOverlay_streaming.png")
+    }
+
+    @Test
+    fun recordingOverlay_editTranscript_png() {
+        val recorder = AudioRecorder(ApplicationProvider.getApplicationContext())
+        val transcript = "What is the best time of year to visit Tokyo?"
+        rule.setContent {
+            SlothSpeakTheme {
+                RecordingOverlay(
+                    audioRecorder = recorder,
+                    onStop = {},
+                    streaming = StreamingCaptureUi(
+                        isStreaming = true,
+                        text = transcript,
+                        isEditing = true,
+                        editableText = transcript,
+                        autoSendRemainingMs = 1_800L
+                    )
+                )
+            }
+        }
+        rule.waitForIdle()
+
+        rule.onNodeWithText("Review your question").assertIsDisplayed()
+        rule.onNodeWithText("${transcript.length} characters").assertIsDisplayed()
+        rule.onNodeWithText("Auto-send in 1.8s").assertIsDisplayed()
+        rule.onNodeWithText("Send now").assertIsDisplayed()
+        rule.onNodeWithText("Discard").assertIsDisplayed()
+
+        rule.onRoot().captureRoboImage("build/ui-screenshots/recordingOverlay_editTranscript.png")
+    }
+
+    @Test
+    fun recordingOverlay_modelLoading_png() {
+        val recorder = AudioRecorder(ApplicationProvider.getApplicationContext())
+        rule.setContent {
+            SlothSpeakTheme {
+                RecordingOverlay(
+                    audioRecorder = recorder,
+                    onStop = {},
+                    streaming = StreamingCaptureUi(
+                        isStreaming = true,
+                        modelLoading = true
+                    )
+                )
+            }
+        }
+        rule.waitForIdle()
+
+        rule.onNodeWithText("Loading Nemotron…").assertIsDisplayed()
+
+        rule.onRoot().captureRoboImage("build/ui-screenshots/recordingOverlay_modelLoading.png")
     }
 }

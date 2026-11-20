@@ -19,10 +19,14 @@ import androidx.lifecycle.viewModelScope
 import com.slothspeak.audio.AudioFocusManager
 import com.slothspeak.audio.AudioRecorder
 import com.slothspeak.audio.BluetoothAudioRouter
+import com.slothspeak.audio.FutoSttEngine
+import com.slothspeak.audio.FutoStreamingSession
+import com.slothspeak.audio.PcmAudioRecorder
 import com.slothspeak.audio.VadAudioRecorder
 import com.slothspeak.audio.WakeWordDetector
 import com.slothspeak.data.ApiKeyManager
 import com.slothspeak.data.CompatibleProviderManager
+import com.slothspeak.data.FutoSttModelManager
 import com.slothspeak.data.db.SlothSpeakDatabase
 import com.slothspeak.service.SlothSpeakService
 import kotlinx.coroutines.CompletableDeferred
@@ -33,6 +37,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -50,6 +55,16 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
     val audioRecorder = AudioRecorder(application)
     private var vadRecorder: VadAudioRecorder? = null
     private var vadObserverJob: Job? = null
+
+    // Live (streaming) on-device transcription — only when FUTO/Nemotron is selected
+    private var streamingRecorder: PcmAudioRecorder? = null
+    private var streamingSession: FutoStreamingSession? = null
+    private var streamingObserverJob: Job? = null
+    private var pendingStreamingFile: File? = null
+    private var lastStreamingPartial: String = ""
+
+    // Transcript edit step: auto-send 2 s after the last edit
+    private var autoSendJob: Job? = null
 
     private var service: SlothSpeakService? = null
     private var serviceBound = false
@@ -105,7 +120,17 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         val lowStorageWarning: Boolean = false,
         val serviceBindError: Boolean = false,
         val isInteractiveRecording: Boolean = false,
-        val vadSpeechDetected: Boolean = false
+        val vadSpeechDetected: Boolean = false,
+        // Live on-device transcription (FUTO/Nemotron)
+        val isStreamingTranscription: Boolean = false,
+        val streamingModelLoading: Boolean = false,
+        val streamingText: String = "",
+        val streamingError: String? = null,
+        val recordingDurationMs: Long = 0L,
+        // Transcript edit step before the LLM call
+        val isEditingTranscript: Boolean = false,
+        val editableTranscript: String = "",
+        val autoSendRemainingMs: Long = 0L
     )
 
     data class SessionItem(
@@ -189,6 +214,8 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         return when (apiKeyManager.getSttProvider()) {
             ApiKeyManager.STT_PROVIDER_OPENAI -> apiKeyManager.hasKey()
             ApiKeyManager.STT_PROVIDER_TOGETHER -> apiKeyManager.hasSttApiKey()
+            ApiKeyManager.STT_PROVIDER_FUTO ->
+                FutoSttModelManager(getApplication()).isInstalled()
             ApiKeyManager.STT_PROVIDER_CUSTOM ->
                 config.baseUrl.isNotBlank() && config.model.isNotBlank()
             else -> false
@@ -289,6 +316,8 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         }
         if (_isPipelineRunning.value) return
         if (wakeWordDetector?.isRunning == true) return
+        // Never fight the user's capture/transcript-edit screen for the mic.
+        if (_uiState.value.isRecording || _uiState.value.showRecordingOverlay) return
 
         // Don't start if a pipeline is active
         val state = _pipelineState.value
@@ -703,17 +732,29 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
     private fun startRecording() {
         if (!computeVoiceAvailable()) return // any usable STT provider — not just the OpenAI key
 
-        // Request exclusive audio focus to silence other apps during recording
-        audioFocusManager.requestRecordingFocus()
-
         val isInteractive = apiKeyManager.getInteractiveVoiceEnabled()
+        val isStreaming = isFutoStreamingActive()
+
+        // Live capture requests audio focus after the model loads so other apps
+        // are not silenced while the ~650 MB model is being initialized.
+        if (!isStreaming) {
+            audioFocusManager.requestRecordingFocus()
+        }
 
         // Show recording overlay immediately
         _uiState.value = _uiState.value.copy(
             isRecording = true,
             showRecordingOverlay = true,
             isInteractiveRecording = isInteractive,
-            vadSpeechDetected = false
+            vadSpeechDetected = false,
+            isStreamingTranscription = isStreaming,
+            streamingModelLoading = isStreaming,
+            streamingText = "",
+            streamingError = null,
+            recordingDurationMs = 0L,
+            isEditingTranscript = false,
+            editableTranscript = "",
+            autoSendRemainingMs = 0L
         )
 
         // Launch coroutine to handle BT routing (suspend) then start recording
@@ -723,6 +764,11 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
             val btDevice = if (btRouted) bluetoothRouter.findBluetoothInputDevice() else null
             // On API <31, use VOICE_COMMUNICATION audio source when BT SCO is active
             val useBtSource = btRouted && android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.S
+
+            if (isStreaming) {
+                startStreamingCapture(btDevice, useBtSource, isInteractive)
+                return@launch
+            }
 
             if (isInteractive) {
                 // Use VAD-based recording for auto-stop
@@ -790,6 +836,286 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         }
     }
 
+    /**
+     * FUTO/Nemotron runs on-device, so audio can be transcribed while the user
+     * is still speaking. Other STT providers keep the record-then-upload flow.
+     */
+    private fun isFutoStreamingActive(): Boolean =
+        apiKeyManager.getSttProvider() == ApiKeyManager.STT_PROVIDER_FUTO
+
+    /**
+     * Load the on-device model, then start PCM capture and live recognition.
+     * The overlay shows a loading header until the model is ready.
+     */
+    private suspend fun startStreamingCapture(
+        btDevice: android.media.AudioDeviceInfo?,
+        useBtSource: Boolean,
+        isInteractive: Boolean
+    ) {
+        val context = getApplication<Application>()
+        val session = try {
+            FutoSttEngine.get(context).startStreaming(apiKeyManager.getFutoSttLanguage())
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start on-device streaming model", e)
+            bluetoothRouter.stopBluetoothRecordingRoute()
+            audioFocusManager.abandonFocus()
+            _uiState.value = _uiState.value.copy(
+                isRecording = false,
+                streamingModelLoading = false,
+                streamingError = e.message ?: "Could not load the on-device speech model."
+            )
+            return
+        }
+
+        // User may have cancelled while the model was loading.
+        if (!_uiState.value.isRecording || !_uiState.value.showRecordingOverlay) {
+            session.release()
+            bluetoothRouter.stopBluetoothRecordingRoute()
+            audioFocusManager.abandonFocus()
+            return
+        }
+
+        streamingSession = session
+        lastStreamingPartial = ""
+        audioFocusManager.requestRecordingFocus()
+
+        val recorder = PcmAudioRecorder(
+            context = context,
+            enableVadAutoStop = isInteractive,
+            silenceAfterSpeechMs = apiKeyManager.getSilenceTimeoutMs(),
+            noSpeechTimeoutMs = 8000,
+            onFrame = { samples, count ->
+                val partial = session.accept(samples, count)
+                if (partial != lastStreamingPartial) {
+                    lastStreamingPartial = partial
+                    _uiState.update { current ->
+                        if (current.isStreamingTranscription) {
+                            current.copy(streamingText = partial)
+                        } else {
+                            current
+                        }
+                    }
+                }
+            }
+        )
+        streamingRecorder = recorder
+
+        val audioFile = recorder.start(
+            viewModelScope,
+            preferredDevice = btDevice,
+            useBluetoothAudioSource = useBtSource
+        )
+        if (audioFile == null) {
+            streamingRecorder = null
+            streamingSession = null
+            session.release()
+            bluetoothRouter.stopBluetoothRecordingRoute()
+            audioFocusManager.abandonFocus()
+            _uiState.value = _uiState.value.copy(
+                isRecording = false,
+                streamingModelLoading = false,
+                streamingError = "Could not start the microphone for live transcription."
+            )
+            return
+        }
+        pendingStreamingFile = audioFile
+        _uiState.value = _uiState.value.copy(streamingModelLoading = false)
+
+        streamingObserverJob?.cancel()
+        streamingObserverJob = viewModelScope.launch {
+            var terminalHandled = false
+            recorder.state.collect { st ->
+                if (_uiState.value.isStreamingTranscription) {
+                    _uiState.update { current ->
+                        if (current.isStreamingTranscription) {
+                            current.copy(
+                                recordingDurationMs = st.durationMs,
+                                vadSpeechDetected = st.isSpeechDetected
+                            )
+                        } else {
+                            current
+                        }
+                    }
+                }
+                if (terminalHandled) return@collect
+                when {
+                    st.speechEndedByVad -> {
+                        terminalHandled = true
+                        Log.d(TAG, "Streaming VAD auto-stop: speech ended")
+                        if (apiKeyManager.getInteractiveVoiceEnabled()) playPingSound()
+                        viewModelScope.launch { stopStreamingCapture(goToEdit = true) }
+                    }
+                    st.noSpeechDetected -> {
+                        terminalHandled = true
+                        Log.d(TAG, "Streaming VAD auto-stop: no speech detected")
+                        viewModelScope.launch { stopStreamingCapture(goToEdit = false, discard = true) }
+                    }
+                    st.maxDurationReached -> {
+                        terminalHandled = true
+                        viewModelScope.launch { stopStreamingCapture(goToEdit = true) }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Stop live capture, finalize the transcript, and either open the edit step
+     * or fall back to the normal batch transcription when no text was produced.
+     */
+    private suspend fun stopStreamingCapture(goToEdit: Boolean, discard: Boolean = false) {
+        streamingObserverJob?.cancel()
+        streamingObserverJob = null
+
+        val recorder = streamingRecorder ?: return
+        streamingRecorder = null
+
+        val file = withContext(Dispatchers.IO) { recorder.stopAndAwait() }
+        recorder.release()
+
+        val session = streamingSession
+        streamingSession = null
+        val finalText = withContext(Dispatchers.Default) {
+            session?.finish()?.trim().orEmpty()
+        }
+        session?.release()
+
+        bluetoothRouter.stopBluetoothRecordingRoute()
+        audioFocusManager.abandonFocus()
+
+        val audioFile = file ?: pendingStreamingFile
+        pendingStreamingFile = null
+
+        if (discard) {
+            audioFile?.delete()
+            resetStreamingUi()
+            maybeStartWakeWordDetection()
+            return
+        }
+
+        if (!goToEdit || finalText.isBlank()) {
+            // Nothing to edit — keep the existing batch transcription path so
+            // audio is not lost if live recognition produced no text.
+            resetStreamingUi()
+            if (audioFile != null && audioFile.exists() && audioFile.length() > WAV_HEADER_BYTES) {
+                stopRecordingInternal(audioFile, discardSilent = false)
+            } else {
+                audioFile?.delete()
+                maybeStartWakeWordDetection()
+            }
+            return
+        }
+
+        audioFile?.delete()
+        _uiState.value = _uiState.value.copy(
+            isRecording = false,
+            showRecordingOverlay = true,
+            isStreamingTranscription = true,
+            streamingModelLoading = false,
+            streamingText = finalText,
+            streamingError = null,
+            recordingDurationMs = 0L,
+            vadSpeechDetected = false,
+            isEditingTranscript = true,
+            editableTranscript = finalText,
+            autoSendRemainingMs = AUTO_SEND_DELAY_MS
+        )
+        startAutoSendCountdown()
+    }
+
+    private fun resetStreamingUi() {
+        autoSendJob?.cancel()
+        autoSendJob = null
+        _uiState.value = _uiState.value.copy(
+            isRecording = false,
+            showRecordingOverlay = false,
+            isStreamingTranscription = false,
+            streamingModelLoading = false,
+            streamingText = "",
+            streamingError = null,
+            recordingDurationMs = 0L,
+            isEditingTranscript = false,
+            editableTranscript = "",
+            autoSendRemainingMs = 0L,
+            vadSpeechDetected = false
+        )
+    }
+
+    /** User edits the transcript: restart the 2 s auto-send countdown. */
+    fun updateStreamingTranscript(text: String) {
+        if (!_uiState.value.isEditingTranscript) return
+        _uiState.value = _uiState.value.copy(editableTranscript = text)
+        startAutoSendCountdown()
+    }
+
+    private fun startAutoSendCountdown() {
+        autoSendJob?.cancel()
+        if (_uiState.value.editableTranscript.isBlank()) {
+            autoSendJob = null
+            _uiState.value = _uiState.value.copy(autoSendRemainingMs = 0L)
+            return
+        }
+        autoSendJob = viewModelScope.launch {
+            var remaining = AUTO_SEND_DELAY_MS
+            _uiState.value = _uiState.value.copy(autoSendRemainingMs = remaining)
+            while (remaining > 0) {
+                delay(AUTO_SEND_TICK_MS)
+                remaining = (remaining - AUTO_SEND_TICK_MS).coerceAtLeast(0)
+                _uiState.value = _uiState.value.copy(autoSendRemainingMs = remaining)
+            }
+            sendStreamingTranscript()
+        }
+    }
+
+    /** Send the (possibly edited) live transcript to the LLM now. */
+    fun sendStreamingTranscript() {
+        if (!_uiState.value.isEditingTranscript) return
+        autoSendJob?.cancel()
+        autoSendJob = null
+        val question = _uiState.value.editableTranscript.trim()
+        if (question.isBlank()) return
+        pendingStreamingFile?.delete()
+        pendingStreamingFile = null
+        resetStreamingUi()
+        submitStreamingQuestion(question)
+    }
+
+    /** Discard the transcript and return to the main screen. */
+    fun cancelStreamingTranscript() {
+        autoSendJob?.cancel()
+        autoSendJob = null
+        pendingStreamingFile?.delete()
+        pendingStreamingFile = null
+        resetStreamingUi()
+        maybeStartWakeWordDetection()
+    }
+
+    private fun submitStreamingQuestion(question: String) {
+        if (_isPipelineRunning.value) return
+        stopWakeWordDetection()
+        _isPipelineRunning.value = true
+        val deferred = bindAndAwaitService()
+        viewModelScope.launch {
+            try {
+                val svc = withTimeout(10_000) { deferred.await() }
+                _isViewingActivePipeline.value = true
+                svc.startTextPipeline(
+                    question,
+                    _currentConversationId.value,
+                    _currentResponseId.value
+                )
+            } catch (e: TimeoutCancellationException) {
+                _isPipelineRunning.value = false
+                Log.e(TAG, "Timed out waiting for service bind for live transcript", e)
+                _uiState.value = _uiState.value.copy(serviceBindError = true)
+            } catch (e: Exception) {
+                _isPipelineRunning.value = false
+                Log.e(TAG, "Failed to bind service for live transcript", e)
+                _uiState.value = _uiState.value.copy(serviceBindError = true)
+            }
+        }
+    }
+
     private fun bindAndAwaitService(): CompletableDeferred<SlothSpeakService> {
         val context = getApplication<Application>()
         val intent = Intent(context, SlothSpeakService::class.java)
@@ -818,6 +1144,20 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
     }
 
     fun stopRecording() {
+        // FUTO/Nemotron live capture: finalize and open the transcript editor.
+        if (_uiState.value.isStreamingTranscription) {
+            if (streamingRecorder != null) {
+                viewModelScope.launch { stopStreamingCapture(goToEdit = true) }
+            } else {
+                // Still loading the on-device model — cancel before capture starts.
+                bluetoothRouter.stopBluetoothRecordingRoute()
+                audioFocusManager.abandonFocus()
+                resetStreamingUi()
+                maybeStartWakeWordDetection()
+            }
+            return
+        }
+
         val recorder = vadRecorder
         if (recorder != null) {
             // VAD mode: stop VAD recorder and use its output file
@@ -876,6 +1216,14 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         vadRecorder?.release()
         vadRecorder = null
 
+        // Safety: no live capture should survive a batch handoff.
+        streamingObserverJob?.cancel()
+        streamingObserverJob = null
+        streamingRecorder?.release()
+        streamingRecorder = null
+        streamingSession?.release()
+        streamingSession = null
+
         // Release Bluetooth routing before releasing focus to avoid earpiece routing
         bluetoothRouter.stopBluetoothRecordingRoute()
         // Release recording focus so other apps can resume during transcription/thinking
@@ -885,7 +1233,15 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
             showRecordingOverlay = false,
             serviceBindError = false,
             isInteractiveRecording = false,
-            vadSpeechDetected = false
+            vadSpeechDetected = false,
+            isStreamingTranscription = false,
+            streamingModelLoading = false,
+            streamingText = "",
+            streamingError = null,
+            recordingDurationMs = 0L,
+            isEditingTranscript = false,
+            editableTranscript = "",
+            autoSendRemainingMs = 0L
         )
 
         if (discardSilent) {
@@ -1176,6 +1532,7 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         vadObserverJob = null
         vadRecorder?.release()
         vadRecorder = null
+        releaseStreamingCapture(deleteFile = true)
         bluetoothRouter.stopBluetoothRecordingRoute()
         service?.cancelPipeline()
         audioFocusManager.abandonFocus()
@@ -1186,7 +1543,15 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
             isRecording = false,
             showRecordingOverlay = false,
             isInteractiveRecording = false,
-            vadSpeechDetected = false
+            vadSpeechDetected = false,
+            isStreamingTranscription = false,
+            streamingModelLoading = false,
+            streamingText = "",
+            streamingError = null,
+            recordingDurationMs = 0L,
+            isEditingTranscript = false,
+            editableTranscript = "",
+            autoSendRemainingMs = 0L
         )
         unbindServiceSafely()
         maybeStartWakeWordDetection()
@@ -1402,13 +1767,33 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         super.onCleared()
         vadObserverJob?.cancel()
         vadRecorder?.release()
+        releaseStreamingCapture(deleteFile = true)
         bluetoothRouter.release()
         audioRecorder.release()
         audioFocusManager.release()
         unbindServiceSafely()
     }
 
+    /** Cancel any live capture / transcript edit state and release resources. */
+    private fun releaseStreamingCapture(deleteFile: Boolean) {
+        streamingObserverJob?.cancel()
+        streamingObserverJob = null
+        autoSendJob?.cancel()
+        autoSendJob = null
+        streamingRecorder?.release()
+        streamingRecorder = null
+        streamingSession?.release()
+        streamingSession = null
+        if (deleteFile) {
+            pendingStreamingFile?.delete()
+        }
+        pendingStreamingFile = null
+    }
+
     companion object {
         private const val TAG = "ConversationViewModel"
+        private const val AUTO_SEND_DELAY_MS = 2_000L
+        private const val AUTO_SEND_TICK_MS = 100L
+        private const val WAV_HEADER_BYTES = 44L
     }
 }
