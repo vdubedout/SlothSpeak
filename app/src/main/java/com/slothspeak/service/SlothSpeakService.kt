@@ -2004,7 +2004,6 @@ class SlothSpeakService : Service() {
         cancelFollowUpListening()
         isPipelineRunning = false
         _pipelineState.value = PipelineState.Idle
-        updateNotification("Listening stopped")
         stopSelfWithWakeWordGuard()
     }
 
@@ -2359,11 +2358,28 @@ class SlothSpeakService : Service() {
         wakeWordForegroundActive = false
         if (!wasActive) return
         Log.i(TAG, "Wake word foreground: stopped")
-        // If no pipeline is active, allow stopSelf to proceed naturally.
-        // If a pipeline IS active, it will stopSelf when it completes.
+        // If no pipeline is active, drop the FGS state (which also removes the
+        // "Listening…" notification) and stop ourselves. If a pipeline IS
+        // active, it owns the foreground and will stop us when it completes.
         if (!isPipelineRunning && !hasActivePipeline()) {
-            stopSelf()
+            dropForegroundAndStopSelf()
         }
+    }
+
+    /**
+     * Removes the ongoing notification and exits the foreground state before
+     * stopping. Without this a bound service lingers as a foreground service
+     * and its "Listening…" notification survives indefinitely.
+     */
+    private fun dropForegroundAndStopSelf() {
+        try {
+            androidx.core.app.ServiceCompat.stopForeground(
+                this, androidx.core.app.ServiceCompat.STOP_FOREGROUND_REMOVE
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "stopForeground failed", e)
+        }
+        stopSelf()
     }
 
     /**
@@ -2385,11 +2401,11 @@ class SlothSpeakService : Service() {
                     serviceType
                 )
             } else {
-                stopSelf()
+                dropForegroundAndStopSelf()
             }
             return
         }
-        stopSelf()
+        dropForegroundAndStopSelf()
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {

@@ -12,6 +12,7 @@ import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -104,8 +105,22 @@ class WakeWordDetector(
         }
     }
 
-    fun stop() { running = false; detectJob?.cancel(); detectJob = null; detectScope = null; stopRecording() }
-    fun release() { stop(); releaseOnnx() }
+    fun stop() {
+        running = false
+        val job = detectJob
+        detectJob = null
+        detectScope?.cancel()
+        detectScope = null
+        stopRecording()
+        // Close the ONNX sessions only once the detection loop has actually
+        // exited. Closing them underneath a running processChunk() — which is
+        // exactly what happens when we release from the onDetected callback or
+        // when the app goes to the background mid-chunk — native-crashes with a
+        // SIGSEGV inside OrtSession.run().
+        if (job == null) releaseOnnx() else job.invokeOnCompletion { releaseOnnx() }
+    }
+
+    fun release() { stop() }
     fun resetDisabled() { disabledForSession = false }
 
     private fun checkPermissions(): Boolean {
@@ -310,6 +325,7 @@ class WakeWordDetector(
                 refractoryUntilMs = System.currentTimeMillis() + REFRACTORY_MS
                 running = false
                 onDetected(); stopRecording()
+                return // loop is done — don't touch the sessions after release
             }
             consecutiveFailures = 0
         } catch (e: Exception) { noteFailure("processChunk", e) }

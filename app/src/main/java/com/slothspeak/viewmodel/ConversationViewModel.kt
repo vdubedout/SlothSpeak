@@ -217,6 +217,14 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
     @Volatile private var wakeWordDisabledForSession = false
 
     /**
+     * Single-flight guard for detector creation. Several callers can race here
+     * (lifecycle ON_START, screen ON_RESUME, ViewModel init delay, pipeline
+     * completion), and each extra WakeWordDetector opens its own AudioRecord —
+     * a leaked one keeps the microphone open after [stopWakeWordDetection].
+     */
+    @Volatile private var wakeWordStartInProgress = false
+
+    /**
      * True while the app is in the foreground. Passive listening (wake word)
      * must never be armed from the background.
      */
@@ -287,41 +295,61 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         if (state !is SlothSpeakService.PipelineState.Idle &&
             state !is SlothSpeakService.PipelineState.Complete) return
 
-        viewModelScope.launch(Dispatchers.IO) {
-            // Extract models from the APK bundle OFF the main thread
-            val melPath = ensureWakewordModel("melspectrogram.onnx") ?: run {
-                Log.w(TAG, "Wake word unavailable — missing melspectrogram model"); return@launch
-            }
-            val embPath = ensureWakewordModel("embedding_model.onnx") ?: run {
-                Log.w(TAG, "Wake word unavailable — missing embedding model"); return@launch
-            }
-            val wwPath = ensureWakewordModel("hey_jarvis_v0.1.onnx") ?: run {
-                Log.w(TAG, "Wake word unavailable — missing wake word model"); return@launch
-            }
+        // Claim the start slot before launching — otherwise concurrent callers
+        // each build a detector and only the last one is tracked/stopped.
+        synchronized(this) {
+            if (wakeWordStartInProgress) return
+            wakeWordStartInProgress = true
+        }
 
-            Log.i(TAG, "Starting wake word detector")
-            val detector = WakeWordDetector(
-                context = getApplication(),
-                melSpectrogramPath = melPath,
-                embeddingModelPath = embPath,
-                wakeWordModelPath = wwPath,
-                onDetected = {
-                    Log.i(TAG, "Wake word 'Hey Jarvis' detected!")
-                    stopWakeWordDetection()
-                    val svc = service
-                    if (svc != null && serviceBound) {
-                        svc.triggerWakeWordDetected()
-                    } else {
-                        startNewQuestion()
-                    }
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                // Extract models from the APK bundle OFF the main thread
+                val melPath = ensureWakewordModel("melspectrogram.onnx") ?: run {
+                    Log.w(TAG, "Wake word unavailable — missing melspectrogram model"); return@launch
                 }
-            )
-            detector.start()
-            // Once the detector is started, ensure the Service is running as foreground
-            // MICROPHONE so Android doesn't silence the AudioRecord when backgrounded.
-            withContext(Dispatchers.Main) {
-                wakeWordDetector = detector
-                ensureServiceForWakeWord()
+                val embPath = ensureWakewordModel("embedding_model.onnx") ?: run {
+                    Log.w(TAG, "Wake word unavailable — missing embedding model"); return@launch
+                }
+                val wwPath = ensureWakewordModel("hey_jarvis_v0.1.onnx") ?: run {
+                    Log.w(TAG, "Wake word unavailable — missing wake word model"); return@launch
+                }
+
+                // The app may have gone to the background while models were loading
+                if (!isAppInForeground || wakeWordDetector?.isRunning == true) return@launch
+
+                Log.i(TAG, "Starting wake word detector")
+                val detector = WakeWordDetector(
+                    context = getApplication(),
+                    melSpectrogramPath = melPath,
+                    embeddingModelPath = embPath,
+                    wakeWordModelPath = wwPath,
+                    onDetected = {
+                        Log.i(TAG, "Wake word 'Hey Jarvis' detected!")
+                        stopWakeWordDetection()
+                        val svc = service
+                        if (svc != null && serviceBound) {
+                            svc.triggerWakeWordDetected()
+                        } else {
+                            startNewQuestion()
+                        }
+                    }
+                )
+                detector.start()
+                // Once the detector is started, ensure the Service is running as foreground
+                // MICROPHONE so Android doesn't silence the AudioRecord when backgrounded.
+                withContext(Dispatchers.Main) {
+                    // Bail out (and release the AudioRecord) if we lost the foreground
+                    // or a detector got armed in the meantime.
+                    if (!isAppInForeground || !detector.isRunning || wakeWordDetector != null) {
+                        detector.release()
+                        return@withContext
+                    }
+                    wakeWordDetector = detector
+                    ensureServiceForWakeWord()
+                }
+            } finally {
+                wakeWordStartInProgress = false
             }
         }
     }
