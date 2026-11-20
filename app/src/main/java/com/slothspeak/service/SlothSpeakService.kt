@@ -1993,6 +1993,21 @@ class SlothSpeakService : Service() {
         audioFocusManager.abandonFocus()
     }
 
+    /**
+     * Aborts follow-up VAD listening because the app went to the background.
+     * Releases the microphone and drops back to Idle; the conversation itself is
+     * kept so the user can resume from the UI when they come back.
+     */
+    fun abandonFollowUpListening() {
+        if (_pipelineState.value !is PipelineState.ListeningForFollowUp) return
+        Log.i(TAG, "App backgrounded — abandoning follow-up listening")
+        cancelFollowUpListening()
+        isPipelineRunning = false
+        _pipelineState.value = PipelineState.Idle
+        updateNotification("Listening stopped")
+        stopSelfWithWakeWordGuard()
+    }
+
     fun cancelPipeline() {
         isMuted = false
         // Clean up early DB records

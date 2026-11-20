@@ -217,6 +217,46 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
     @Volatile private var wakeWordDisabledForSession = false
 
     /**
+     * True while the app is in the foreground. Passive listening (wake word)
+     * must never be armed from the background.
+     */
+    @Volatile private var isAppInForeground = true
+
+    /**
+     * Called by the Activity on ON_START — re-arms passive listening.
+     */
+    fun onAppForegrounded() {
+        isAppInForeground = true
+        maybeStartWakeWordDetection()
+    }
+
+    /**
+     * Called by the Activity on ON_STOP. The microphone must never stay open
+     * while the app is in the background, so passive listening is torn down:
+     * - wake word detector (and its foreground MICROPHONE service)
+     * - follow-up VAD listening in the pipeline
+     *
+     * Playback and user-initiated recording are left untouched.
+     */
+    fun onAppBackgrounded() {
+        isAppInForeground = false
+        Log.i(TAG, "App backgrounded — stopping listening")
+        stopWakeWordDetection()
+
+        val serviceState = service?.pipelineState?.value
+        val isFollowUpListening =
+            serviceState is SlothSpeakService.PipelineState.ListeningForFollowUp ||
+                    _pipelineState.value is SlothSpeakService.PipelineState.ListeningForFollowUp
+        if (isFollowUpListening) {
+            Log.i(TAG, "Cancelling follow-up listening — app is in the background")
+            service?.abandonFollowUpListening()
+            _isPipelineRunning.value = false
+            _isViewingActivePipeline.value = false
+            _pipelineState.value = SlothSpeakService.PipelineState.Idle
+        }
+    }
+
+    /**
      * Start the wake word detector if conditions are met:
      * - wake word toggle enabled
      * - no pipeline active (Idle state after unbind or before start)
@@ -231,6 +271,8 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
      * from Settings after toggling off→on triggers a fresh init attempt.
      */
     fun maybeStartWakeWordDetection() {
+        // Never arm the mic while the app is in the background
+        if (!isAppInForeground) return
         if (!apiKeyManager.getWakeWordEnabled()) return
         // Clear the session-disable flag when the toggle is on — the user
         // may have toggled off→on since the failure, requesting a fresh attempt.

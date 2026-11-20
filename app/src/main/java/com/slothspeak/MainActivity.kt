@@ -4,7 +4,10 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.viewModels
 import androidx.compose.runtime.Composable
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -19,21 +22,33 @@ import com.slothspeak.viewmodel.SettingsViewModel
 
 class MainActivity : ComponentActivity() {
 
+    private val conversationViewModel: ConversationViewModel by viewModels()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        // Passive listening (wake word / follow-up VAD) is only allowed while the
+        // app is in the foreground — tear it down when we go to the background.
+        lifecycle.addObserver(LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> conversationViewModel.onAppForegrounded()
+                Lifecycle.Event.ON_STOP -> conversationViewModel.onAppBackgrounded()
+                else -> Unit
+            }
+        })
+
         setContent {
             SlothSpeakTheme {
-                SlothSpeakNavigation()
+                SlothSpeakNavigation(conversationViewModel)
             }
         }
     }
 }
 
 @Composable
-fun SlothSpeakNavigation() {
+fun SlothSpeakNavigation(conversationViewModel: ConversationViewModel) {
     val navController = rememberNavController()
-    val conversationViewModel: ConversationViewModel = viewModel()
 
     NavHost(
         navController = navController,
