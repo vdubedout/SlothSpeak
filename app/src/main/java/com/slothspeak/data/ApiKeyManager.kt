@@ -68,14 +68,6 @@ class ApiKeyManager(context: Context) {
         prefs.edit().putBoolean(KEY_PING_BEFORE_READING, enabled).apply()
     }
 
-    fun getWebSearchEnabled(): Boolean {
-        return prefs.getBoolean(KEY_WEB_SEARCH_ENABLED, false)
-    }
-
-    fun setWebSearchEnabled(enabled: Boolean) {
-        prefs.edit().putBoolean(KEY_WEB_SEARCH_ENABLED, enabled).apply()
-    }
-
     fun getXSearchEnabled(): Boolean {
         return prefs.getBoolean(KEY_XSEARCH_ENABLED, false)
     }
@@ -157,6 +149,46 @@ class ApiKeyManager(context: Context) {
 
     fun hasGrokKey(): Boolean {
         return getGrokKey() != null
+    }
+
+    // ============================================================
+    // Built-in LLM provider model selection
+    // ============================================================
+
+    fun getBuiltinModel(provider: String): String? {
+        return prefs.getString(builtinModelKey(provider), null)?.takeIf { it.isNotBlank() }
+    }
+
+    fun setBuiltinModel(provider: String, model: String) {
+        prefs.edit().putString(builtinModelKey(provider), model).apply()
+    }
+
+    fun hasBuiltinLlmKey(provider: String): Boolean {
+        return when (provider) {
+            LLM_PROVIDER_OPENAI -> hasKey()
+            LLM_PROVIDER_GEMINI -> hasGeminiKey()
+            LLM_PROVIDER_CLAUDE -> hasClaudeKey()
+            LLM_PROVIDER_GROK -> hasGrokKey()
+            else -> false
+        }
+    }
+
+    fun saveBuiltinLlmKey(provider: String, key: String) {
+        when (provider) {
+            LLM_PROVIDER_OPENAI -> saveKey(key)
+            LLM_PROVIDER_GEMINI -> saveGeminiKey(key)
+            LLM_PROVIDER_CLAUDE -> saveClaudeKey(key)
+            LLM_PROVIDER_GROK -> saveGrokKey(key)
+        }
+    }
+
+    fun deleteBuiltinLlmKey(provider: String) {
+        when (provider) {
+            LLM_PROVIDER_OPENAI -> deleteKey()
+            LLM_PROVIDER_GEMINI -> deleteGeminiKey()
+            LLM_PROVIDER_CLAUDE -> deleteClaudeKey()
+            LLM_PROVIDER_GROK -> deleteGrokKey()
+        }
     }
 
     // Compat provider selection
@@ -256,10 +288,13 @@ class ApiKeyManager(context: Context) {
     }
 
     fun getSttModel(): String {
-        val provider = getSttProvider()
-        val modelKey = sttModelKey(provider)
+        return getSttModelForProvider(getSttProvider())
+    }
+
+    fun getSttModelForProvider(provider: String): String {
         val defaultModel = defaultSttModel(provider)
-        return prefs.getString(modelKey, defaultModel)?.takeIf { it.isNotBlank() } ?: defaultModel
+        return prefs.getString(sttModelKey(provider), defaultModel)?.takeIf { it.isNotBlank() }
+            ?: defaultModel
     }
 
     fun setSttModel(model: String) {
@@ -268,9 +303,12 @@ class ApiKeyManager(context: Context) {
     }
 
     fun getSttBaseUrl(): String {
-        val provider = getSttProvider()
-        val defaultUrl = defaultSttBaseUrl(provider)
-        return prefs.getString(KEY_STT_BASE_URL, null)?.takeIf { it.isNotBlank() } ?: defaultUrl
+        return getSttBaseUrlForProvider(getSttProvider())
+    }
+
+    fun getSttBaseUrlForProvider(provider: String): String {
+        if (provider != STT_PROVIDER_CUSTOM) return defaultSttBaseUrl(provider)
+        return prefs.getString(KEY_STT_BASE_URL, null)?.takeIf { it.isNotBlank() } ?: ""
     }
 
     fun setSttBaseUrl(url: String) {
@@ -308,10 +346,13 @@ class ApiKeyManager(context: Context) {
     }
 
     fun getTtsModel(): String {
-        val provider = getTtsProvider()
-        val modelKey = ttsModelKey(provider)
+        return getTtsModelForProvider(getTtsProvider())
+    }
+
+    fun getTtsModelForProvider(provider: String): String {
         val defaultModel = defaultTtsModel(provider)
-        return prefs.getString(modelKey, defaultModel)?.takeIf { it.isNotBlank() } ?: defaultModel
+        return prefs.getString(ttsModelKey(provider), defaultModel)?.takeIf { it.isNotBlank() }
+            ?: defaultModel
     }
 
     fun setTtsModel(model: String) {
@@ -320,10 +361,13 @@ class ApiKeyManager(context: Context) {
     }
 
     fun getTtsVoice(): String {
-        val provider = getTtsProvider()
-        val voiceKey = ttsVoiceKey(provider)
+        return getTtsVoiceForProvider(getTtsProvider())
+    }
+
+    fun getTtsVoiceForProvider(provider: String): String {
         val defaultVoice = defaultTtsVoice(provider)
-        return prefs.getString(voiceKey, defaultVoice)?.takeIf { it.isNotBlank() } ?: defaultVoice
+        return prefs.getString(ttsVoiceKey(provider), defaultVoice)?.takeIf { it.isNotBlank() }
+            ?: defaultVoice
     }
 
     fun setTtsVoice(voice: String) {
@@ -344,9 +388,12 @@ class ApiKeyManager(context: Context) {
     }
 
     fun getTtsBaseUrl(): String {
-        val provider = getTtsProvider()
-        val defaultUrl = defaultTtsBaseUrl(provider)
-        return prefs.getString(KEY_TTS_BASE_URL, null)?.takeIf { it.isNotBlank() } ?: defaultUrl
+        return getTtsBaseUrlForProvider(getTtsProvider())
+    }
+
+    fun getTtsBaseUrlForProvider(provider: String): String {
+        if (provider != TTS_PROVIDER_CUSTOM) return defaultTtsBaseUrl(provider)
+        return prefs.getString(KEY_TTS_BASE_URL, null)?.takeIf { it.isNotBlank() } ?: ""
     }
 
     fun setTtsBaseUrl(url: String) {
@@ -421,8 +468,8 @@ class ApiKeyManager(context: Context) {
         private const val KEY_STT_BASE_URL = "stt_base_url"
         private const val KEY_STT_MODEL_PREFIX = "stt_model_"
 
-        private const val OPENAI_BASE_URL = "https://api.openai.com/v1/"
-        private const val TOGETHER_BASE_URL = "https://api.together.ai/v1/"
+        const val OPENAI_BASE_URL = "https://api.openai.com/v1/"
+        const val TOGETHER_BASE_URL = "https://api.together.ai/v1/"
 
         const val DEFAULT_STT_MODEL_OPENAI = "gpt-4o-transcribe"
         const val DEFAULT_STT_MODEL_TOGETHER = "openai/whisper-large-v3"
@@ -589,11 +636,43 @@ class ApiKeyManager(context: Context) {
         private const val KEY_SELECTED_COMPAT_PROVIDER = "selected_compat_provider_id"
         private const val KEY_MODEL = "selected_model"
         private const val KEY_REASONING_EFFORT = "reasoning_effort"
+
+        // Built-in LLM provider ids (used for per-provider model prefs and key dispatch)
+        const val LLM_PROVIDER_OPENAI = "openai"
+        const val LLM_PROVIDER_GEMINI = "gemini"
+        const val LLM_PROVIDER_CLAUDE = "claude"
+        const val LLM_PROVIDER_GROK = "grok"
+
+        private const val KEY_BUILTIN_MODEL_PREFIX = "llm_model_"
+
+        private fun builtinModelKey(provider: String): String = "$KEY_BUILTIN_MODEL_PREFIX$provider"
+
+        val OPENAI_MODELS = listOf(MODEL_STANDARD, MODEL_PRO, MODEL_DEEP_RESEARCH)
+        val GEMINI_MODELS = listOf(MODEL_GEMINI_PRO, MODEL_GEMINI_PRO_35, MODEL_GEMINI_DEEP_RESEARCH)
+        val CLAUDE_MODELS = listOf(MODEL_CLAUDE_OPUS)
+        val GROK_MODELS = listOf(MODEL_GROK)
+
+        fun modelsForBuiltin(provider: String): List<String> = when (provider) {
+            LLM_PROVIDER_OPENAI -> OPENAI_MODELS
+            LLM_PROVIDER_GEMINI -> GEMINI_MODELS
+            LLM_PROVIDER_CLAUDE -> CLAUDE_MODELS
+            LLM_PROVIDER_GROK -> GROK_MODELS
+            else -> emptyList()
+        }
+
+        fun defaultBuiltinModel(provider: String): String = modelsForBuiltin(provider).firstOrNull() ?: MODEL_PRO
+
+        fun displayNameForBuiltin(provider: String): String = when (provider) {
+            LLM_PROVIDER_OPENAI -> "OpenAI"
+            LLM_PROVIDER_GEMINI -> "Gemini"
+            LLM_PROVIDER_CLAUDE -> "Claude"
+            LLM_PROVIDER_GROK -> "xAI Grok"
+            else -> provider
+        }
         private const val KEY_THINKING_LEVEL = "gemini_thinking_level"
         private const val KEY_VOICE = "selected_voice"
         private const val KEY_PING_BEFORE_READING = "ping_before_reading"
         private const val KEY_PLAYBACK_SPEED = "playback_speed"
-        private const val KEY_WEB_SEARCH_ENABLED = "web_search_enabled"
         private const val KEY_XSEARCH_ENABLED = "xsearch_enabled"
         private const val KEY_SYSTEM_PROMPT = "system_prompt"
         private const val KEY_DEEP_RESEARCH_SYSTEM_PROMPT = "deep_research_system_prompt"

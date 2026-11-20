@@ -12,6 +12,10 @@ SlothSpeak supports any OpenAI Chat Completions-compatible API provider via a ge
 
 ## Configuration
 
+Providers are added and edited through the same provider dialog as built-in LLM
+providers (Settings → LLM → Add model). The list only shows configured providers;
+the active provider is highlighted and exposes its thinking chip + Modify action.
+
 Each provider instance has:
 - **Display Name** — friendly label shown in UI
 - **Base URL** — must include up to and including `/v1/` (e.g. `https://api.z.ai/api/paas/v4/`)

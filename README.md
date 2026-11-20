@@ -30,7 +30,7 @@ There is no server backend. The app calls AI provider APIs directly from the dev
 
 **Deep Research** — OpenAI and Gemini deep research models perform extended async research with polling, delivering thorough answers backed by web sources.
 
-**Web search and X search** — Toggle web search for grounded, up-to-date answers (provider-dependent). Grok additionally supports X (Twitter) search.
+**X search** — Grok supports X (Twitter) search for real-time posts. Web search is not exposed as a setting.
 
 **Reasoning traces** — Compatible providers' thinking/reasoning content is captured, saved to the database, and displayed as a collapsible 'View thinking' section in the answer card.
 
@@ -75,7 +75,7 @@ There is no server backend. The app calls AI provider APIs directly from the dev
 | Google | Gemini 3.5 Pro | `gemini-3.5-pro-preview` | Configurable thinking level (low/medium/high) |
 | Google | Gemini Deep Research | `deep-research-max-preview-04-2026` | Async polling with Google Search |
 | Anthropic | Claude Opus 4.8 | `claude-opus-4-8` | Adaptive thinking, effort (low/medium/high/max) |
-| xAI | Grok 4.3 | `grok-4.3` | Optional web search and X (Twitter) search |
+| xAI | Grok 4.3 | `grok-4.3` | Optional X (Twitter) search |
 
 Each provider requires its own API key, configured in Settings. All providers use OpenAI for STT and TTS, so an OpenAI API key is always required.
 
@@ -172,8 +172,14 @@ app/src/main/java/com/slothspeak/
 │   └── SystemPrompts.kt                 Default system prompts (standard + deep research)
 │
 ├── data/
-│   ├── ApiKeyManager.kt                 EncryptedSharedPreferences for API keys (4 providers),
-│   │                                    model selection, voice, effort levels, toggles
+│   ├── ApiKeyManager.kt                 EncryptedSharedPreferences for API keys (built-in
+│   │                                    providers + compat keys), model selection, voice,
+│   │                                    effort levels, toggles
+│   ├── LlmProvider.kt                   Unified LLM provider UI model (type, active model,
+│   │                                    thinking level) used by the settings screen
+│   ├── SpeechProvider.kt                Compact STT/TTS provider UI models (active,
+│   │                                    configured, key status)
+│   ├── CompatibleProviders.kt           OpenAI-compatible provider configs + key storage
 │   └── db/
 │       ├── SlothSpeakDatabase.kt        Room database (singleton)
 │       ├── ConversationDao.kt           All queries, including audio path management
@@ -202,11 +208,15 @@ app/src/main/java/com/slothspeak/
 │   │   ├── RecordingOverlay.kt          Full-screen overlay with stop button. Manual mode:
 │   │   │                                5-minute countdown. Interactive mode: speech
 │   │   │                                detection indicator with auto-stop.
-│   │   ├── SettingsScreen.kt            API keys (4 providers), model selector with provider
-│   │   │                                headings, effort/thinking controls, voice selector
-│   │   │                                with preview, web search toggles, system prompts,
-│   │   │                                TTS instructions, interactive voice settings,
-│   │   │                                storage management
+│   │   ├── SettingsScreen.kt            LLM providers (active/configured cards, one add
+│   │   │                                flow for built-in + OpenAI-compatible providers),
+│   │   │                                thinking chip + modify, compact STT/TTS, voice
+│   │   │                                selector with preview, system
+│   │   │                                prompts, TTS instructions, interactive voice
+│   │   │                                settings, storage management
+│   │   ├── LlmSettingsSection.kt        Unified provider list, add/edit dialog, thinking
+│   │   │                                dialog, search toggles
+│   │   ├── SpeechSettingsSection.kt     Compact STT/TTS provider cards + add/edit dialogs
 │   │   └── HistoryScreen.kt             Conversation list with date, preview, audio indicator.
 │   │                                    Detail view with replay. Delete / delete-audio-only.
 │   └── components/
@@ -229,9 +239,10 @@ app/src/main/java/com/slothspeak/
     ├── ConversationViewModel.kt          Session state, service binding, recording lifecycle
     │                                     (manual + VAD), follow-up tracking, playback controls,
     │                                     interactive voice audio focus management
-    ├── SettingsViewModel.kt              API key CRUD (4 providers), model/voice/effort
-    │                                     selection, system prompts, TTS instructions,
-    │                                     interactive voice settings, history management
+    ├── SettingsViewModel.kt              Unified LLM provider state (active/configured,
+    │                                     thinking), STT/TTS provider config, system prompts,
+    │                                     TTS instructions, interactive voice settings,
+    │                                     history management
     └── HistoryViewModel.kt               Conversation browsing, audio file resolution
 ```
 

@@ -541,7 +541,7 @@ class SlothSpeakService : Service() {
         val reasoningEffort = apiKeyManager.getReasoningEffort()
         val thinkingLevel = apiKeyManager.getThinkingLevel()
         val claudeEffort = apiKeyManager.getClaudeEffort()
-        val webSearchEnabled = apiKeyManager.getWebSearchEnabled()
+        val webSearchEnabled = false
         val xSearchEnabled = apiKeyManager.getXSearchEnabled()
         val isGemini = model == ApiKeyManager.MODEL_GEMINI_PRO || model == ApiKeyManager.MODEL_GEMINI_PRO_35
         val isClaude = model == ApiKeyManager.MODEL_CLAUDE_OPUS
@@ -1154,7 +1154,7 @@ class SlothSpeakService : Service() {
                             val reasoningEffort = apiKeyManager.getReasoningEffort()
                             val thinkingLevel = apiKeyManager.getThinkingLevel()
                             val claudeEffort = apiKeyManager.getClaudeEffort()
-                            val webSearchEnabled = apiKeyManager.getWebSearchEnabled()
+                            val webSearchEnabled = false
                             val xSearchEnabled = apiKeyManager.getXSearchEnabled()
                             val isGemini = model == ApiKeyManager.MODEL_GEMINI_PRO || model == ApiKeyManager.MODEL_GEMINI_PRO_35
                             val isClaude = model == ApiKeyManager.MODEL_CLAUDE_OPUS
@@ -1691,7 +1691,7 @@ class SlothSpeakService : Service() {
         val reasoningEffort = apiKeyManager.getReasoningEffort()
         val thinkingLevel = apiKeyManager.getThinkingLevel()
         val claudeEffort = apiKeyManager.getClaudeEffort()
-        val webSearchEnabled = apiKeyManager.getWebSearchEnabled()
+        val webSearchEnabled = false
         val xSearchEnabled = apiKeyManager.getXSearchEnabled()
         val isGemini = model == ApiKeyManager.MODEL_GEMINI_PRO || model == ApiKeyManager.MODEL_GEMINI_PRO_35
         val isClaude = model == ApiKeyManager.MODEL_CLAUDE_OPUS

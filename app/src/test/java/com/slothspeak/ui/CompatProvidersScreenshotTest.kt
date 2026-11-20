@@ -15,12 +15,15 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.github.takahirom.roborazzi.RoborazziRule
 import com.github.takahirom.roborazzi.RoborazziTaskType
 import com.github.takahirom.roborazzi.captureRoboImage
+import com.slothspeak.data.ApiKeyManager
 import com.slothspeak.data.CompatibleProviderConfig
+import com.slothspeak.data.SttProviderUiState
+import com.slothspeak.data.TtsProviderUiState
 import com.slothspeak.ui.components.QAPairCard
 import com.slothspeak.ui.screens.CompatProvidersList
-import com.slothspeak.ui.screens.SttSection
+import com.slothspeak.ui.screens.SttSettingsSection
 import com.slothspeak.ui.screens.TextInputQuestionBar
-import com.slothspeak.ui.screens.TtsSection
+import com.slothspeak.ui.screens.TtsSettingsSection
 import com.slothspeak.ui.screens.WakeWordSection
 import com.slothspeak.ui.theme.SlothSpeakTheme
 import org.junit.Rule
@@ -228,24 +231,51 @@ the weather is most favorable and the city's parks and gardens are at their most
 
     @Test
     fun settings_sttSection_png() {
+        val providers = listOf(
+            SttProviderUiState(
+                id = ApiKeyManager.STT_PROVIDER_OPENAI,
+                displayName = "OpenAI",
+                description = "gpt-4o-transcribe · uses OpenAI key from LLM",
+                model = ApiKeyManager.DEFAULT_STT_MODEL_OPENAI,
+                baseUrl = null,
+                configured = true,
+                active = false,
+                hasKey = true,
+                status = "Using OpenAI key from LLM section"
+            ),
+            SttProviderUiState(
+                id = ApiKeyManager.STT_PROVIDER_TOGETHER,
+                displayName = "Together",
+                description = "whisper-large-v3 · requires Together key",
+                model = ApiKeyManager.DEFAULT_STT_MODEL_TOGETHER,
+                baseUrl = null,
+                configured = true,
+                active = true,
+                hasKey = true,
+                status = "Key configured"
+            ),
+            SttProviderUiState(
+                id = ApiKeyManager.STT_PROVIDER_CUSTOM,
+                displayName = "Custom",
+                description = "Any OpenAI-compatible STT endpoint",
+                model = "",
+                baseUrl = null,
+                configured = false,
+                active = false,
+                hasKey = false,
+                status = "Not configured"
+            )
+        )
+
         rule.setContent {
             SlothSpeakTheme {
                 Surface(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(16.dp)) {
-                        Text(
-                            text = "Speech-to-Text",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = com.slothspeak.ui.theme.AccentGreen
-                        )
-                        SttSection(
-                            sttProvider = "together",
-                            hasSttApiKey = true,
-                            sttModel = "openai/whisper-large-v3",
-                            sttBaseUrl = "https://api.together.ai/v1/",
-                            sttKeySaved = true,
+                        SttSettingsSection(
+                            providers = providers,
                             onSetProvider = {},
-                            onSaveApiKey = {},
-                            onDeleteApiKey = {},
+                            onSaveKey = {},
+                            onDeleteKey = {},
                             onSetModel = {},
                             onSetBaseUrl = {}
                         )
@@ -255,16 +285,16 @@ the weather is most favorable and the city's parks and gardens are at their most
         }
         rule.waitForIdle()
 
-        // Semantics assertions — three provider rows
-        rule.onNodeWithText("OpenAI (gpt-4o-transcribe)").assertIsDisplayed()
-        rule.onNodeWithText("Together (whisper-large-v3)").assertIsDisplayed()
-        rule.onNodeWithText("Custom (OpenAI-compatible)").assertIsDisplayed()
+        rule.onNodeWithText("Speech-to-Text").assertIsDisplayed()
+        rule.onNodeWithText("Together").assertIsDisplayed()
+        rule.onNodeWithText("openai/whisper-large-v3").assertIsDisplayed()
+        rule.onNodeWithText("ACTIVE").assertIsDisplayed()
+        rule.onNodeWithText("Key configured").assertIsDisplayed()
+        rule.onNodeWithText("OpenAI").assertIsDisplayed()
+        rule.onNodeWithText("Add provider").assertIsDisplayed()
+        // Unconfigured providers stay out of the base page.
+        rule.onNodeWithText("Custom").assertDoesNotExist()
 
-        // Key-saved indicator
-        rule.onNodeWithText("API key is saved").assertIsDisplayed()
-        rule.onNodeWithText("Key saved successfully!").assertIsDisplayed()
-
-        // PNG capture
         rule.onRoot().captureRoboImage("build/ui-screenshots/settings_sttSection.png")
     }
 
@@ -274,28 +304,73 @@ the weather is most favorable and the city's parks and gardens are at their most
 
     @Test
     fun settings_ttsSection_png() {
+        val providers = listOf(
+            TtsProviderUiState(
+                id = ApiKeyManager.TTS_PROVIDER_OPENAI,
+                displayName = "OpenAI",
+                description = "gpt-4o-mini-tts · uses OpenAI key from LLM",
+                model = ApiKeyManager.DEFAULT_TTS_MODEL_OPENAI,
+                voice = ApiKeyManager.DEFAULT_TTS_VOICE_OPENAI,
+                baseUrl = null,
+                configured = true,
+                active = false,
+                onDevice = false,
+                hasKey = true,
+                status = "Using OpenAI key from LLM section"
+            ),
+            TtsProviderUiState(
+                id = ApiKeyManager.TTS_PROVIDER_TOGETHER,
+                displayName = "Together",
+                description = "Orpheus · uses Together key from STT",
+                model = ApiKeyManager.DEFAULT_TTS_MODEL_TOGETHER,
+                voice = ApiKeyManager.DEFAULT_TTS_VOICE_TOGETHER,
+                baseUrl = null,
+                configured = true,
+                active = true,
+                onDevice = false,
+                hasKey = true,
+                status = "Using Together key from Speech-to-Text"
+            ),
+            TtsProviderUiState(
+                id = ApiKeyManager.TTS_PROVIDER_CUSTOM,
+                displayName = "Custom",
+                description = "Any OpenAI-compatible TTS endpoint",
+                model = "",
+                voice = "",
+                baseUrl = null,
+                configured = false,
+                active = false,
+                onDevice = false,
+                hasKey = false,
+                status = "Not configured"
+            ),
+            TtsProviderUiState(
+                id = ApiKeyManager.TTS_PROVIDER_ONDEVICE,
+                displayName = "On-device",
+                description = "Android system TTS · free & offline",
+                model = "",
+                voice = "",
+                baseUrl = null,
+                configured = true,
+                active = false,
+                onDevice = true,
+                hasKey = false,
+                status = "On-device · free & offline"
+            )
+        )
+
         rule.setContent {
             SlothSpeakTheme {
                 Surface(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(16.dp)) {
-                        Text(
-                            text = "Text-to-Speech",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = com.slothspeak.ui.theme.AccentGreen
-                        )
-                        TtsSection(
-                            ttsProvider = "together",
-                            ttsModel = "canopylabs/orpheus-3b-0.1-ft",
-                            ttsVoice = "tara",
-                            ttsBaseUrl = "https://api.together.ai/v1/",
-                            hasTtsCustomApiKey = false,
-                            ttsKeySaved = false,
+                        TtsSettingsSection(
+                            providers = providers,
                             onSetProvider = {},
                             onSetModel = {},
                             onSetVoice = {},
                             onSetBaseUrl = {},
-                            onSaveCustomApiKey = {},
-                            onDeleteCustomApiKey = {}
+                            onSaveCustomKey = {},
+                            onDeleteCustomKey = {}
                         )
                     }
                 }
@@ -303,18 +378,16 @@ the weather is most favorable and the city's parks and gardens are at their most
         }
         rule.waitForIdle()
 
-        // Semantics assertions — four provider rows
-        rule.onNodeWithText("OpenAI (gpt-4o-mini-tts)").assertIsDisplayed()
-        rule.onNodeWithText("Together (Orpheus)").assertIsDisplayed()
-        rule.onNodeWithText("Custom (OpenAI-compatible)").assertIsDisplayed()
-        rule.onNodeWithText("On-device (Android system TTS)").assertIsDisplayed()
+        rule.onNodeWithText("Text-to-Speech").assertIsDisplayed()
+        rule.onNodeWithText("Together").assertIsDisplayed()
+        rule.onNodeWithText("canopylabs/orpheus-3b-0.1-ft · tara").assertIsDisplayed()
+        rule.onNodeWithText("ACTIVE").assertIsDisplayed()
+        rule.onNodeWithText("Using Together key from Speech-to-Text").assertIsDisplayed()
+        rule.onNodeWithText("Add provider").assertIsDisplayed()
+        // Unconfigured and always-available on-device stay out of the base page.
+        rule.onNodeWithText("Custom").assertDoesNotExist()
+        rule.onNodeWithText("On-device").assertDoesNotExist()
 
-        // Together selected — model and voice fields should be visible
-        rule.onNodeWithText("Model").assertIsDisplayed()
-        rule.onNodeWithText("Voice").assertIsDisplayed()
-        rule.onNodeWithText("Uses your Together.ai API key from Speech-to-Text.").assertIsDisplayed()
-
-        // PNG capture
         rule.onRoot().captureRoboImage("build/ui-screenshots/settings_ttsSection.png")
     }
 

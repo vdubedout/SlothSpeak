@@ -3,10 +3,15 @@ package com.slothspeak.viewmodel
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.slothspeak.api.ModelDiscovery
 import com.slothspeak.config.SystemPrompts
 import com.slothspeak.data.ApiKeyManager
 import com.slothspeak.data.CompatibleProviderConfig
 import com.slothspeak.data.CompatibleProviderManager
+import com.slothspeak.data.LlmProviderType
+import com.slothspeak.data.LlmProviderUiState
+import com.slothspeak.data.SttProviderUiState
+import com.slothspeak.data.TtsProviderUiState
 import com.slothspeak.data.db.SlothSpeakDatabase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -25,29 +30,16 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     val state: StateFlow<SettingsState> = _state
 
     data class SettingsState(
-        val hasApiKey: Boolean = false,
         val selectedModel: String = ApiKeyManager.MODEL_PRO,
         val reasoningEffort: String = ApiKeyManager.EFFORT_HIGH,
         val audioStorageSizeMb: Long = 0,
         val conversationCount: Int = 0,
-        val showDeleteKeyDialog: Boolean = false,
         val showClearHistoryDialog: Boolean = false,
         val showDeleteAllAudioDialog: Boolean = false,
-        val keySaved: Boolean = false,
         val selectedVoice: String = ApiKeyManager.DEFAULT_VOICE,
         val pingBeforeReading: Boolean = false,
-        val hasGeminiKey: Boolean = false,
-        val geminiKeySaved: Boolean = false,
-        val showDeleteGeminiKeyDialog: Boolean = false,
         val thinkingLevel: String = ApiKeyManager.THINKING_HIGH,
-        val hasClaudeKey: Boolean = false,
-        val claudeKeySaved: Boolean = false,
-        val showDeleteClaudeKeyDialog: Boolean = false,
         val claudeEffort: String = ApiKeyManager.CLAUDE_EFFORT_HIGH,
-        val hasGrokKey: Boolean = false,
-        val grokKeySaved: Boolean = false,
-        val showDeleteGrokKeyDialog: Boolean = false,
-        val webSearchEnabled: Boolean = false,
         val xSearchEnabled: Boolean = false,
         val systemPrompt: String = SystemPrompts.SYSTEM_PROMPT,
         val deepResearchSystemPrompt: String = SystemPrompts.DEEP_RESEARCH_SYSTEM_PROMPT,
@@ -58,12 +50,15 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         // Compat providers
         val compatProviders: List<CompatibleProviderConfig> = emptyList(),
         val selectedCompatProviderId: String? = null,
+        // Unified LLM providers (configured only)
+        val llmProviders: List<LlmProviderUiState> = emptyList(),
         // STT
         val sttProvider: String = ApiKeyManager.STT_PROVIDER_OPENAI,
         val hasSttApiKey: Boolean = false,
         val sttKeySaved: Boolean = false,
         val sttModel: String = ApiKeyManager.DEFAULT_STT_MODEL_OPENAI,
         val sttBaseUrl: String = "https://api.openai.com/v1/",
+        val sttProviders: List<SttProviderUiState> = emptyList(),
         // Wake word
         val wakeWordEnabled: Boolean = false,
         // TTS
@@ -72,7 +67,8 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         val ttsVoice: String = ApiKeyManager.DEFAULT_TTS_VOICE_OPENAI,
         val ttsBaseUrl: String = "https://api.openai.com/v1/",
         val hasTtsCustomApiKey: Boolean = false,
-        val ttsKeySaved: Boolean = false
+        val ttsKeySaved: Boolean = false,
+        val ttsProviders: List<TtsProviderUiState> = emptyList()
     )
 
     init {
@@ -83,24 +79,18 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch {
             val audioSize = withContext(Dispatchers.IO) { calculateAudioStorageSize() }
             val convCount = withContext(Dispatchers.IO) { database.conversationDao().getConversationCount() }
+            val llmProviders = buildLlmProviders()
+            val sttProviders = buildSttProviders()
+            val ttsProviders = buildTtsProviders()
             _state.value = _state.value.copy(
-                hasApiKey = apiKeyManager.hasKey(),
                 selectedModel = apiKeyManager.getSelectedModel(),
                 reasoningEffort = apiKeyManager.getReasoningEffort(),
                 selectedVoice = apiKeyManager.getSelectedVoice(),
                 pingBeforeReading = apiKeyManager.getPingBeforeReading(),
                 audioStorageSizeMb = audioSize,
                 conversationCount = convCount,
-                keySaved = false,
-                hasGeminiKey = apiKeyManager.hasGeminiKey(),
-                geminiKeySaved = false,
                 thinkingLevel = apiKeyManager.getThinkingLevel(),
-                hasClaudeKey = apiKeyManager.hasClaudeKey(),
-                claudeKeySaved = false,
                 claudeEffort = apiKeyManager.getClaudeEffort(),
-                hasGrokKey = apiKeyManager.hasGrokKey(),
-                grokKeySaved = false,
-                webSearchEnabled = apiKeyManager.getWebSearchEnabled(),
                 xSearchEnabled = apiKeyManager.getXSearchEnabled(),
                 systemPrompt = apiKeyManager.getSystemPrompt(),
                 deepResearchSystemPrompt = apiKeyManager.getDeepResearchSystemPrompt(),
@@ -111,6 +101,9 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                 followUpPrompt = apiKeyManager.getFollowUpPrompt(),
                 compatProviders = compatibleProviderManager.getProviders(),
                 selectedCompatProviderId = apiKeyManager.getSelectedCompatProviderId(),
+                llmProviders = llmProviders,
+                sttProviders = sttProviders,
+                ttsProviders = ttsProviders,
                 sttProvider = apiKeyManager.getSttProvider(),
                 hasSttApiKey = apiKeyManager.hasSttApiKey(),
                 sttModel = apiKeyManager.getSttModel(),
@@ -125,78 +118,9 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    fun saveApiKey(key: String) {
-        if (key.isBlank()) return
-        apiKeyManager.saveKey(key)
-        _state.value = _state.value.copy(hasApiKey = true, keySaved = true)
-    }
-
-    fun showDeleteKeyDialog() {
-        _state.value = _state.value.copy(showDeleteKeyDialog = true)
-    }
-
-    fun dismissDeleteKeyDialog() {
-        _state.value = _state.value.copy(showDeleteKeyDialog = false)
-    }
-
-    fun confirmDeleteKey() {
-        apiKeyManager.deleteKey()
-        _state.value = _state.value.copy(
-            hasApiKey = false,
-            showDeleteKeyDialog = false,
-            keySaved = false
-        )
-    }
-
-    fun saveGeminiKey(key: String) {
-        if (key.isBlank()) return
-        apiKeyManager.saveGeminiKey(key)
-        _state.value = _state.value.copy(hasGeminiKey = true, geminiKeySaved = true)
-    }
-
-    fun showDeleteGeminiKeyDialog() {
-        _state.value = _state.value.copy(showDeleteGeminiKeyDialog = true)
-    }
-
-    fun dismissDeleteGeminiKeyDialog() {
-        _state.value = _state.value.copy(showDeleteGeminiKeyDialog = false)
-    }
-
-    fun confirmDeleteGeminiKey() {
-        apiKeyManager.deleteGeminiKey()
-        _state.value = _state.value.copy(
-            hasGeminiKey = false,
-            showDeleteGeminiKeyDialog = false,
-            geminiKeySaved = false
-        )
-    }
-
     fun setThinkingLevel(level: String) {
         apiKeyManager.setThinkingLevel(level)
         _state.value = _state.value.copy(thinkingLevel = level)
-    }
-
-    fun saveClaudeKey(key: String) {
-        if (key.isBlank()) return
-        apiKeyManager.saveClaudeKey(key)
-        _state.value = _state.value.copy(hasClaudeKey = true, claudeKeySaved = true)
-    }
-
-    fun showDeleteClaudeKeyDialog() {
-        _state.value = _state.value.copy(showDeleteClaudeKeyDialog = true)
-    }
-
-    fun dismissDeleteClaudeKeyDialog() {
-        _state.value = _state.value.copy(showDeleteClaudeKeyDialog = false)
-    }
-
-    fun confirmDeleteClaudeKey() {
-        apiKeyManager.deleteClaudeKey()
-        _state.value = _state.value.copy(
-            hasClaudeKey = false,
-            showDeleteClaudeKeyDialog = false,
-            claudeKeySaved = false
-        )
     }
 
     fun setClaudeEffort(effort: String) {
@@ -204,75 +128,351 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         _state.value = _state.value.copy(claudeEffort = effort)
     }
 
-    fun saveGrokKey(key: String) {
-        if (key.isBlank()) return
-        apiKeyManager.saveGrokKey(key)
-        _state.value = _state.value.copy(hasGrokKey = true, grokKeySaved = true)
-    }
-
-    fun showDeleteGrokKeyDialog() {
-        _state.value = _state.value.copy(showDeleteGrokKeyDialog = true)
-    }
-
-    fun dismissDeleteGrokKeyDialog() {
-        _state.value = _state.value.copy(showDeleteGrokKeyDialog = false)
-    }
-
-    fun confirmDeleteGrokKey() {
-        apiKeyManager.deleteGrokKey()
-        _state.value = _state.value.copy(
-            hasGrokKey = false,
-            showDeleteGrokKeyDialog = false,
-            grokKeySaved = false
-        )
-    }
-
-    // Compat provider methods
-
-    fun addCompatProvider(config: CompatibleProviderConfig) {
+    /**
+     * Saves a compatible provider together with an optional API key.
+     * A blank key keeps the existing key (use provider deletion to remove it).
+     * New providers become active immediately.
+     */
+    fun saveCompatProvider(config: CompatibleProviderConfig, apiKey: String?) {
+        val isNew = compatibleProviderManager.getProvider(config.id) == null
         compatibleProviderManager.saveProvider(config)
-        refreshState()
-    }
-
-    fun saveCompatProvider(config: CompatibleProviderConfig) {
-        compatibleProviderManager.saveProvider(config)
+        if (!apiKey.isNullOrBlank()) {
+            compatibleProviderManager.saveProviderKey(config.id, apiKey)
+        }
+        if (isNew) {
+            apiKeyManager.setSelectedCompatProviderId(config.id)
+        }
         refreshState()
     }
 
     fun deleteCompatProvider(id: String) {
+        val wasActive = apiKeyManager.getSelectedCompatProviderId() == id
         compatibleProviderManager.deleteProvider(id)
-        val currentSelected = apiKeyManager.getSelectedCompatProviderId()
-        if (currentSelected == id) {
+        if (wasActive) {
+            apiKeyManager.setSelectedCompatProviderId(null)
+            val next = buildLlmProviders().firstOrNull()
+            if (next != null) applyProviderSelection(next)
+        }
+        refreshState()
+    }
+
+    /**
+     * Fetches model IDs from a compatible provider's `/models` endpoint.
+     * Uses the key typed in the dialog, falling back to the stored provider key.
+     */
+    suspend fun fetchCompatModels(
+        baseUrl: String,
+        providerId: String?,
+        apiKey: String?
+    ): Result<List<String>> {
+        val key = apiKey?.takeIf { it.isNotBlank() }
+            ?: providerId?.let { compatibleProviderManager.getProviderKey(it) }
+        return ModelDiscovery.fetchModels(baseUrl, key)
+    }
+
+
+    // ============================================================
+    // Unified LLM provider settings
+    // ============================================================
+
+    fun activateLlmProvider(provider: LlmProviderUiState) {
+        applyProviderSelection(provider)
+        refreshState()
+    }
+
+    /**
+     * Adds or updates a built-in provider (OpenAI, Gemini, Claude, xAI).
+     * A blank [apiKey] keeps the currently configured key.
+     */
+    fun saveBuiltinLlmProvider(
+        type: LlmProviderType,
+        apiKey: String?,
+        modelId: String,
+        activate: Boolean
+    ) {
+        val providerKey = builtinProviderKey(type) ?: return
+        val existing = _state.value.llmProviders.firstOrNull { it.type == type }
+        if (!apiKey.isNullOrBlank()) {
+            apiKeyManager.saveBuiltinLlmKey(providerKey, apiKey)
+        }
+        val models = ApiKeyManager.modelsForBuiltin(providerKey)
+        val model = modelId.takeIf { it in models } ?: ApiKeyManager.defaultBuiltinModel(providerKey)
+        apiKeyManager.setBuiltinModel(providerKey, model)
+        // Newly added providers, explicit activation, and edits to the active
+        // provider take effect immediately.
+        if (activate || existing == null || existing.active) {
+            apiKeyManager.setSelectedModel(model)
             apiKeyManager.setSelectedCompatProviderId(null)
         }
         refreshState()
     }
 
-    fun saveCompatProviderKey(id: String, key: String) {
-        compatibleProviderManager.saveProviderKey(id, key)
+    fun deleteBuiltinLlmProvider(type: LlmProviderType) {
+        val providerKey = builtinProviderKey(type) ?: return
+        val wasActive = _state.value.llmProviders.firstOrNull { it.type == type }?.active == true
+        apiKeyManager.deleteBuiltinLlmKey(providerKey)
+        if (wasActive) {
+            val next = buildLlmProviders().firstOrNull()
+            if (next != null) applyProviderSelection(next)
+        }
         refreshState()
     }
 
-    fun deleteCompatProviderKey(id: String) {
-        compatibleProviderManager.deleteProviderKey(id)
-        refreshState()
+    /**
+     * Applies a thinking/reasoning setting to a provider. Built-in providers map
+     * to their existing preference, while compatible providers are updated in
+     * their stored config.
+     */
+    fun setLlmThinking(provider: LlmProviderUiState, enabled: Boolean, level: String) {
+        when (provider.type) {
+            LlmProviderType.OPENAI -> apiKeyManager.setReasoningEffort(level)
+            LlmProviderType.GEMINI -> apiKeyManager.setThinkingLevel(level)
+            LlmProviderType.CLAUDE -> apiKeyManager.setClaudeEffort(level)
+            LlmProviderType.GROK -> Unit
+            LlmProviderType.COMPAT -> {
+                val id = provider.compatProviderId ?: return
+                val config = compatibleProviderManager.getProvider(id) ?: return
+                compatibleProviderManager.saveProvider(
+                    config.copy(thinkingEnabled = enabled, reasoningEffort = level)
+                )
+            }
+        }
+        refreshLlmProviders()
     }
 
-    fun selectCompatProvider(id: String?) {
-        if (id != null) {
-            apiKeyManager.setSelectedCompatProviderId(id)
-            // Clear legacy model to avoid ambiguity — set to default
-            apiKeyManager.setSelectedModel(ApiKeyManager.MODEL_PRO)
+    private fun refreshLlmProviders() {
+        _state.value = _state.value.copy(llmProviders = buildLlmProviders())
+    }
+
+    private fun applyProviderSelection(provider: LlmProviderUiState) {
+        if (provider.isCompat && provider.compatProviderId != null) {
+            apiKeyManager.setSelectedCompatProviderId(provider.compatProviderId)
         } else {
+            apiKeyManager.setSelectedModel(provider.modelId)
             apiKeyManager.setSelectedCompatProviderId(null)
+            builtinProviderKey(provider.type)?.let { key ->
+                apiKeyManager.setBuiltinModel(key, provider.modelId)
+            }
         }
-        refreshState()
     }
 
-    fun setModel(model: String) {
-        apiKeyManager.setSelectedModel(model)
-        apiKeyManager.setSelectedCompatProviderId(null)
-        _state.value = _state.value.copy(selectedModel = model, selectedCompatProviderId = null)
+    private fun builtinProviderKey(type: LlmProviderType): String? = when (type) {
+        LlmProviderType.OPENAI -> ApiKeyManager.LLM_PROVIDER_OPENAI
+        LlmProviderType.GEMINI -> ApiKeyManager.LLM_PROVIDER_GEMINI
+        LlmProviderType.CLAUDE -> ApiKeyManager.LLM_PROVIDER_CLAUDE
+        LlmProviderType.GROK -> ApiKeyManager.LLM_PROVIDER_GROK
+        LlmProviderType.COMPAT -> null
+    }
+
+    private data class ThinkingSpec(
+        val levels: List<String>,
+        val enabled: Boolean,
+        val level: String
+    )
+
+    private fun buildLlmProviders(): List<LlmProviderUiState> {
+        val selectedModel = apiKeyManager.getSelectedModel()
+        val selectedCompatId = apiKeyManager.getSelectedCompatProviderId()
+        val compatSelectionValid = selectedCompatId != null &&
+            compatibleProviderManager.getProvider(selectedCompatId) != null
+        val providers = mutableListOf<LlmProviderUiState>()
+
+        fun addBuiltin(type: LlmProviderType, providerKey: String) {
+            if (!apiKeyManager.hasBuiltinLlmKey(providerKey)) return
+            val models = ApiKeyManager.modelsForBuiltin(providerKey)
+            val active = !compatSelectionValid && selectedModel in models
+            val stored = apiKeyManager.getBuiltinModel(providerKey)?.takeIf { it in models }
+            val model = when {
+                active -> selectedModel
+                stored != null -> stored
+                !compatSelectionValid && selectedModel in models -> selectedModel
+                else -> ApiKeyManager.defaultBuiltinModel(providerKey)
+            }
+            val thinking = builtinThinking(type, model)
+            providers += LlmProviderUiState(
+                key = "builtin:$providerKey",
+                type = type,
+                displayName = ApiKeyManager.displayNameForBuiltin(providerKey),
+                modelId = model,
+                active = active,
+                thinkingEnabled = thinking.enabled,
+                thinkingLevel = thinking.level,
+                thinkingLevels = thinking.levels
+            )
+        }
+
+        addBuiltin(LlmProviderType.OPENAI, ApiKeyManager.LLM_PROVIDER_OPENAI)
+        addBuiltin(LlmProviderType.GEMINI, ApiKeyManager.LLM_PROVIDER_GEMINI)
+        addBuiltin(LlmProviderType.CLAUDE, ApiKeyManager.LLM_PROVIDER_CLAUDE)
+        addBuiltin(LlmProviderType.GROK, ApiKeyManager.LLM_PROVIDER_GROK)
+
+        compatibleProviderManager.getProviders().forEach { config ->
+            providers += LlmProviderUiState(
+                key = "compat:${config.id}",
+                type = LlmProviderType.COMPAT,
+                displayName = config.displayName,
+                modelId = config.modelId,
+                baseUrl = config.baseUrl,
+                active = selectedCompatId == config.id,
+                thinkingEnabled = config.thinkingEnabled,
+                thinkingLevel = config.reasoningEffort,
+                thinkingLevels = listOf("low", "high", "max"),
+                compatProviderId = config.id
+            )
+        }
+
+        return providers
+    }
+
+    private fun buildSttProviders(): List<SttProviderUiState> {
+        val current = apiKeyManager.getSttProvider()
+        val hasOpenAi = apiKeyManager.hasKey()
+        val hasTogether = apiKeyManager.hasSttApiKey()
+        val customBase = apiKeyManager.getSttBaseUrlForProvider(ApiKeyManager.STT_PROVIDER_CUSTOM)
+        val customModel = apiKeyManager.getSttModelForProvider(ApiKeyManager.STT_PROVIDER_CUSTOM)
+        val customConfigured = customBase.isNotBlank() && customModel.isNotBlank()
+
+        return listOf(
+            SttProviderUiState(
+                id = ApiKeyManager.STT_PROVIDER_OPENAI,
+                displayName = "OpenAI",
+                description = "gpt-4o-transcribe · uses OpenAI key from LLM",
+                model = apiKeyManager.getSttModelForProvider(ApiKeyManager.STT_PROVIDER_OPENAI),
+                baseUrl = null,
+                configured = hasOpenAi,
+                active = current == ApiKeyManager.STT_PROVIDER_OPENAI,
+                hasKey = hasOpenAi,
+                status = if (hasOpenAi) "Using OpenAI key from LLM section" else "OpenAI key not configured"
+            ),
+            SttProviderUiState(
+                id = ApiKeyManager.STT_PROVIDER_TOGETHER,
+                displayName = "Together",
+                description = "whisper-large-v3 · requires Together key",
+                model = apiKeyManager.getSttModelForProvider(ApiKeyManager.STT_PROVIDER_TOGETHER),
+                baseUrl = null,
+                configured = hasTogether,
+                active = current == ApiKeyManager.STT_PROVIDER_TOGETHER,
+                hasKey = hasTogether,
+                status = if (hasTogether) "Key configured" else "Key missing"
+            ),
+            SttProviderUiState(
+                id = ApiKeyManager.STT_PROVIDER_CUSTOM,
+                displayName = "Custom",
+                description = "Any OpenAI-compatible STT endpoint",
+                model = customModel,
+                baseUrl = customBase.takeIf { it.isNotBlank() },
+                configured = customConfigured,
+                active = current == ApiKeyManager.STT_PROVIDER_CUSTOM,
+                hasKey = hasTogether,
+                status = if (customConfigured) "Custom endpoint" else "Not configured"
+            )
+        )
+    }
+
+    private fun buildTtsProviders(): List<TtsProviderUiState> {
+        val current = apiKeyManager.getTtsProvider()
+        val hasOpenAi = apiKeyManager.hasKey()
+        val hasTogether = apiKeyManager.hasSttApiKey()
+        val customBase = apiKeyManager.getTtsBaseUrlForProvider(ApiKeyManager.TTS_PROVIDER_CUSTOM)
+        val customModel = apiKeyManager.getTtsModelForProvider(ApiKeyManager.TTS_PROVIDER_CUSTOM)
+        val customConfigured = customBase.isNotBlank() && customModel.isNotBlank()
+
+        return listOf(
+            TtsProviderUiState(
+                id = ApiKeyManager.TTS_PROVIDER_OPENAI,
+                displayName = "OpenAI",
+                description = "gpt-4o-mini-tts · uses OpenAI key from LLM",
+                model = apiKeyManager.getTtsModelForProvider(ApiKeyManager.TTS_PROVIDER_OPENAI),
+                voice = apiKeyManager.getTtsVoiceForProvider(ApiKeyManager.TTS_PROVIDER_OPENAI),
+                baseUrl = null,
+                configured = hasOpenAi,
+                active = current == ApiKeyManager.TTS_PROVIDER_OPENAI,
+                onDevice = false,
+                hasKey = hasOpenAi,
+                status = if (hasOpenAi) "Using OpenAI key from LLM section" else "OpenAI key not configured"
+            ),
+            TtsProviderUiState(
+                id = ApiKeyManager.TTS_PROVIDER_TOGETHER,
+                displayName = "Together",
+                description = "Orpheus · uses Together key from STT",
+                model = apiKeyManager.getTtsModelForProvider(ApiKeyManager.TTS_PROVIDER_TOGETHER),
+                voice = apiKeyManager.getTtsVoiceForProvider(ApiKeyManager.TTS_PROVIDER_TOGETHER),
+                baseUrl = null,
+                configured = hasTogether,
+                active = current == ApiKeyManager.TTS_PROVIDER_TOGETHER,
+                onDevice = false,
+                hasKey = hasTogether,
+                status = if (hasTogether) "Using Together key from Speech-to-Text" else "Together key missing — configure in STT"
+            ),
+            TtsProviderUiState(
+                id = ApiKeyManager.TTS_PROVIDER_CUSTOM,
+                displayName = "Custom",
+                description = "Any OpenAI-compatible TTS endpoint",
+                model = customModel,
+                voice = apiKeyManager.getTtsVoiceForProvider(ApiKeyManager.TTS_PROVIDER_CUSTOM),
+                baseUrl = customBase.takeIf { it.isNotBlank() },
+                configured = customConfigured,
+                active = current == ApiKeyManager.TTS_PROVIDER_CUSTOM,
+                onDevice = false,
+                hasKey = apiKeyManager.getTtsCustomApiKey() != null,
+                status = if (customConfigured) "Custom endpoint" else "Not configured"
+            ),
+            TtsProviderUiState(
+                id = ApiKeyManager.TTS_PROVIDER_ONDEVICE,
+                displayName = "On-device",
+                description = "Android system TTS · free & offline",
+                model = "",
+                voice = "",
+                baseUrl = null,
+                configured = true,
+                active = current == ApiKeyManager.TTS_PROVIDER_ONDEVICE,
+                onDevice = true,
+                hasKey = false,
+                status = "On-device · free & offline"
+            )
+        )
+    }
+
+    private fun builtinThinking(type: LlmProviderType, model: String): ThinkingSpec {
+        return when (type) {
+            LlmProviderType.OPENAI -> {
+                if (model == ApiKeyManager.MODEL_PRO) {
+                    ThinkingSpec(
+                        levels = listOf(
+                            ApiKeyManager.EFFORT_MEDIUM,
+                            ApiKeyManager.EFFORT_HIGH,
+                            ApiKeyManager.EFFORT_XHIGH
+                        ),
+                        enabled = true,
+                        level = apiKeyManager.getReasoningEffort()
+                    )
+                } else ThinkingSpec(emptyList(), false, "")
+            }
+            LlmProviderType.GEMINI -> {
+                if (model == ApiKeyManager.MODEL_GEMINI_PRO || model == ApiKeyManager.MODEL_GEMINI_PRO_35) {
+                    ThinkingSpec(
+                        levels = listOf(
+                            ApiKeyManager.THINKING_LOW,
+                            ApiKeyManager.THINKING_MEDIUM,
+                            ApiKeyManager.THINKING_HIGH
+                        ),
+                        enabled = true,
+                        level = apiKeyManager.getThinkingLevel()
+                    )
+                } else ThinkingSpec(emptyList(), false, "")
+            }
+            LlmProviderType.CLAUDE -> ThinkingSpec(
+                levels = listOf(
+                    ApiKeyManager.CLAUDE_EFFORT_LOW,
+                    ApiKeyManager.CLAUDE_EFFORT_MEDIUM,
+                    ApiKeyManager.CLAUDE_EFFORT_HIGH,
+                    ApiKeyManager.CLAUDE_EFFORT_MAX
+                ),
+                enabled = true,
+                level = apiKeyManager.getClaudeEffort()
+            )
+            LlmProviderType.GROK, LlmProviderType.COMPAT -> ThinkingSpec(emptyList(), false, "")
+        }
     }
 
     fun setReasoningEffort(effort: String) {
@@ -288,11 +488,6 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     fun setPingBeforeReading(enabled: Boolean) {
         apiKeyManager.setPingBeforeReading(enabled)
         _state.value = _state.value.copy(pingBeforeReading = enabled)
-    }
-
-    fun setWebSearchEnabled(enabled: Boolean) {
-        apiKeyManager.setWebSearchEnabled(enabled)
-        _state.value = _state.value.copy(webSearchEnabled = enabled)
     }
 
     fun setXSearchEnabled(enabled: Boolean) {
@@ -466,11 +661,13 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         if (key.isBlank()) return
         apiKeyManager.saveSttApiKey(key)
         _state.value = _state.value.copy(hasSttApiKey = true, sttKeySaved = true)
+        refreshSpeechProviders()
     }
 
     fun deleteSttApiKey() {
         apiKeyManager.deleteSttApiKey()
         _state.value = _state.value.copy(hasSttApiKey = false, sttKeySaved = false)
+        refreshSpeechProviders()
     }
 
     fun setSttProvider(id: String) {
@@ -481,11 +678,13 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     fun setSttModel(model: String) {
         apiKeyManager.setSttModel(model)
         _state.value = _state.value.copy(sttModel = model)
+        refreshSpeechProviders()
     }
 
     fun setSttBaseUrl(url: String) {
         apiKeyManager.setSttBaseUrl(url)
         _state.value = _state.value.copy(sttBaseUrl = url)
+        refreshSpeechProviders()
     }
 
     // ============================================================
@@ -500,27 +699,39 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     fun setTtsModel(model: String) {
         apiKeyManager.setTtsModel(model)
         _state.value = _state.value.copy(ttsModel = model)
+        refreshSpeechProviders()
     }
 
     fun setTtsVoice(voice: String) {
         apiKeyManager.setTtsVoice(voice)
         _state.value = _state.value.copy(ttsVoice = voice)
+        refreshSpeechProviders()
     }
 
     fun setTtsBaseUrl(url: String) {
         apiKeyManager.setTtsBaseUrl(url)
         _state.value = _state.value.copy(ttsBaseUrl = url)
+        refreshSpeechProviders()
     }
 
     fun saveTtsCustomApiKey(key: String) {
         if (key.isBlank()) return
         apiKeyManager.saveTtsCustomApiKey(key)
         _state.value = _state.value.copy(hasTtsCustomApiKey = true, ttsKeySaved = true)
+        refreshSpeechProviders()
     }
 
     fun deleteTtsCustomApiKey() {
         apiKeyManager.deleteTtsCustomApiKey()
         _state.value = _state.value.copy(hasTtsCustomApiKey = false, ttsKeySaved = false)
+        refreshSpeechProviders()
+    }
+
+    private fun refreshSpeechProviders() {
+        _state.value = _state.value.copy(
+            sttProviders = buildSttProviders(),
+            ttsProviders = buildTtsProviders()
+        )
     }
 
     private fun calculateAudioStorageSize(): Long {
