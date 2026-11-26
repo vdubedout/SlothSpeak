@@ -32,6 +32,9 @@ interface ConversationDao {
     @Query("UPDATE qa_pairs SET audioFilePaths = NULL WHERE id = :qaPairId")
     suspend fun clearAudioForQAPair(qaPairId: Long)
 
+    @Query("UPDATE qa_pairs SET audioFilePaths = :audioFilePaths WHERE id = :qaPairId")
+    suspend fun updateAudioFilePaths(qaPairId: Long, audioFilePaths: String?)
+
     @Query("DELETE FROM qa_pairs WHERE id = :qaPairId")
     suspend fun deleteQAPair(qaPairId: Long)
 

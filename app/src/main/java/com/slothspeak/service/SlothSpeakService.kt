@@ -164,7 +164,9 @@ class SlothSpeakService : Service() {
             val reasoningEffort: String?,
             val llmResponseSeconds: Int,
             val answerTextRich: String? = null,
-            val reasoningText: String? = null
+            val reasoningText: String? = null,
+            /** Room id of the saved QAPair — null for legacy/replay results. */
+            val qaPairId: Long? = null
         ) : PipelineState()
         data class ListeningForFollowUp(
             val conversationId: Long,
@@ -398,7 +400,8 @@ class SlothSpeakService : Service() {
                 pending.conversationId, pending.audioFiles, pending.model,
                 pending.reasoningEffort, pending.llmResponseSeconds,
                 pending.answerTextRich,
-                reasoningText = pending.reasoningText
+                reasoningText = pending.reasoningText,
+                qaPairId = pending.qaPairId
             )
         } else {
             val lastState = lastPipelineProcessingState
@@ -478,11 +481,16 @@ class SlothSpeakService : Service() {
     /**
      * Public entry point for text-only questions (no audio recording needed).
      * Same bookkeeping as startPipeline but calls runPipelineFromText directly.
+     *
+     * @param autoSpeak when false the pipeline completes silently — TTS synthesis,
+     *   playback, ping, and follow-up listening are skipped and the answer is
+     *   only shown as text (the user can tap the speaker icon to hear it later).
      */
     fun startTextPipeline(
         questionText: String,
         conversationId: Long?,
-        previousResponseId: String?
+        previousResponseId: String?,
+        autoSpeak: Boolean = false
     ) {
         // Clean up any lingering early DB records from a previous cancelled pipeline
         val staleQaPairId = earlyQaPairId
@@ -517,7 +525,7 @@ class SlothSpeakService : Service() {
         pipelineJob = serviceScope.launch {
             acquireWakeLock()
             try {
-                runPipelineFromText(questionText, conversationId, previousResponseId)
+                runPipelineFromText(questionText, conversationId, previousResponseId, autoSpeak)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -853,6 +861,7 @@ class SlothSpeakService : Service() {
         // Step 4: Save to database (before playback so data isn't lost on cancel)
         val earlyConvId = earlyConversationId
         val earlyPairId = earlyQaPairId
+        var savedQaPairId: Long? = null
         val conversationId = try {
             val audioPathsJson = audioFiles.joinToString(",") { it.absolutePath }
             if (earlyConvId != null && earlyPairId != null) {
@@ -868,13 +877,14 @@ class SlothSpeakService : Service() {
                     answerTextRich = lastAnswerTextRich,
                     reasoningText = lastReasoningText
                 )
+                savedQaPairId = earlyPairId
                 earlyConvId
             } else {
                 // Fallback: early save failed, do full insert
                 val convId = existingConversationId ?: run {
                     database.conversationDao().insertConversation(Conversation())
                 }
-                database.conversationDao().insertQAPair(
+                savedQaPairId = database.conversationDao().insertQAPair(
                     QAPair(
                         conversationId = convId,
                         questionText = questionText,
@@ -905,7 +915,8 @@ class SlothSpeakService : Service() {
             questionText, answerText, responseId, conversationId,
             audioFiles, dbModel, lastReasoningEffort, lastLlmResponseSeconds,
             lastAnswerTextRich,
-            reasoningText = lastReasoningText
+            reasoningText = lastReasoningText,
+            qaPairId = savedQaPairId
         )
     }
 
@@ -919,7 +930,8 @@ class SlothSpeakService : Service() {
         reasoningEffort: String?,
         llmResponseSeconds: Int,
         answerTextRich: String? = null,
-        reasoningText: String? = null
+        reasoningText: String? = null,
+        qaPairId: Long? = null
     ) {
         if (playbackJob?.isActive == true) {
             // Replay in progress — save result so it can be restored later
@@ -928,7 +940,8 @@ class SlothSpeakService : Service() {
                 model = model, reasoningEffort = reasoningEffort,
                 llmResponseSeconds = llmResponseSeconds,
                 answerTextRich = answerTextRich,
-                reasoningText = reasoningText
+                reasoningText = reasoningText,
+                qaPairId = qaPairId
             )
             return
         }
@@ -950,7 +963,8 @@ class SlothSpeakService : Service() {
                         reasoningEffort = reasoningEffort,
                         llmResponseSeconds = llmResponseSeconds,
                         answerTextRich = answerTextRich,
-                        reasoningText = reasoningText
+                        reasoningText = reasoningText,
+                        qaPairId = qaPairId
                     )
                     updateNotification("Answer ready (skipped during call)")
                     delay(1000)
@@ -969,7 +983,8 @@ class SlothSpeakService : Service() {
                         reasoningEffort = reasoningEffort,
                         llmResponseSeconds = llmResponseSeconds,
                         answerTextRich = answerTextRich,
-                        reasoningText = reasoningText
+                        reasoningText = reasoningText,
+                        qaPairId = qaPairId
                     )
                     updateNotification("Answer ready")
                     delay(1000)
@@ -989,7 +1004,8 @@ class SlothSpeakService : Service() {
                         reasoningEffort = reasoningEffort,
                         llmResponseSeconds = llmResponseSeconds,
                         answerTextRich = answerTextRich,
-                        reasoningText = reasoningText
+                        reasoningText = reasoningText,
+                        qaPairId = qaPairId
                     )
                     updateNotification("Answer ready (muted)")
                     delay(1000)
@@ -1072,7 +1088,8 @@ class SlothSpeakService : Service() {
                         reasoningEffort = reasoningEffort,
                         llmResponseSeconds = llmResponseSeconds,
                         answerTextRich = answerTextRich,
-                        reasoningText = reasoningText
+                        reasoningText = reasoningText,
+                        qaPairId = qaPairId
                     )
                     updateNotification("Answer complete")
                     delay(1000)
@@ -1709,13 +1726,15 @@ class SlothSpeakService : Service() {
 
         // Run the pipeline with the transcribed text directly
         // We need to skip transcription since we already have the text
-        runPipelineFromText(questionText, conversationId, previousResponseId)
+        // Voice-driven follow-up keeps spoken output.
+        runPipelineFromText(questionText, conversationId, previousResponseId, autoSpeak = true)
     }
 
     private suspend fun runPipelineFromText(
         questionText: String,
         existingConversationId: Long?,
-        previousResponseId: String?
+        previousResponseId: String?,
+        autoSpeak: Boolean = false
     ) {
         isPipelineRunning = true
         val model = apiKeyManager.getSelectedModel()
@@ -1919,9 +1938,13 @@ class SlothSpeakService : Service() {
 
         emitProcessingState(PipelineState.ThinkingComplete(questionText, answerText, responseId, lastAnswerTextRich))
 
-        // Step 3: TTS
+        // Step 3: TTS (skipped entirely for silent text submissions)
         val audioFiles: List<File>
-        if (apiKeyManager.isTtsConfigured()) {
+        if (!autoSpeak) {
+            // Silent mode — answer is shown as text; audio can be synthesized
+            // on demand later via synthesizeAndPlayReply().
+            audioFiles = emptyList()
+        } else if (apiKeyManager.isTtsConfigured()) {
             val sessionDir = File(filesDir, "audio/${System.currentTimeMillis()}")
             val ttsConfig = apiKeyManager.getEffectiveTtsConfig()
             val ttsInstructions = if (ttsConfig.provider == ApiKeyManager.TTS_PROVIDER_OPENAI) {
@@ -1970,6 +1993,7 @@ class SlothSpeakService : Service() {
         // Step 4: Save to database
         val earlyConvId = earlyConversationId
         val earlyPairId = earlyQaPairId
+        var savedQaPairId: Long? = null
         val conversationId = try {
             val audioPathsJson = audioFiles.joinToString(",") { it.absolutePath }
             if (earlyConvId != null && earlyPairId != null) {
@@ -1984,6 +2008,7 @@ class SlothSpeakService : Service() {
                     answerTextRich = lastAnswerTextRich,
                     reasoningText = lastReasoningText
                 )
+                savedQaPairId = earlyPairId
                 earlyConvId
             } else {
                 val convId = existingConversationId ?: run {
@@ -1991,7 +2016,7 @@ class SlothSpeakService : Service() {
                         database.conversationDao().insertConversation(Conversation())
                     }
                 }
-                database.conversationDao().insertQAPair(
+                savedQaPairId = database.conversationDao().insertQAPair(
                     QAPair(
                         conversationId = convId,
                         questionText = questionText,
@@ -2017,12 +2042,14 @@ class SlothSpeakService : Service() {
         earlyQaPairId = null
         earlyConversationWasNew = false
 
-        // Step 5: Playback
+        // Step 5: Playback (silent submissions skip playback inside and go
+        // straight to Complete since audioFiles is empty)
         launchPipelinePlayback(
             questionText, answerText, responseId, conversationId,
             audioFiles, dbModel, lastReasoningEffort, lastLlmResponseSeconds,
             lastAnswerTextRich,
-            reasoningText = lastReasoningText
+            reasoningText = lastReasoningText,
+            qaPairId = savedQaPairId
         )
     }
 
@@ -2232,7 +2259,8 @@ class SlothSpeakService : Service() {
                         pending.conversationId, pending.audioFiles, pending.model,
                         pending.reasoningEffort, pending.llmResponseSeconds,
                         pending.answerTextRich,
-                        reasoningText = pending.reasoningText
+                        reasoningText = pending.reasoningText,
+                        qaPairId = pending.qaPairId
                     )
                 } else {
                     _pipelineState.value = PipelineState.Idle
@@ -2241,6 +2269,73 @@ class SlothSpeakService : Service() {
             } finally {
                 releasePlaybackWakeLock()
             }
+        }
+    }
+
+    /**
+     * Synthesizes audio for an already-completed (silent) text reply and plays
+     * it through the normal replay path, so pause/resume/seek/speed/stop all
+     * work. Persists the generated file paths to the QAPair when [qaPairId] is
+     * given, and reports the files back via [onAudioReady] so the caller can
+     * update its UI (subsequent taps replay without re-synthesizing).
+     */
+    fun synthesizeAndPlayReply(
+        qaPairId: Long?,
+        questionText: String,
+        answerText: String,
+        onAudioReady: ((List<File>) -> Unit)? = null
+    ) {
+        // Stop any active playback and stop the pipeline from emitting states
+        // while synthesis runs (same supersession contract as replayAudio).
+        pipelineSuperseded = true
+        playbackJob?.cancel()
+        audioPlayer.stop()
+        audioFocusManager.abandonFocus()
+        deactivateMediaSession()
+
+        updateNotification("Generating audio...")
+
+        serviceScope.launch {
+            val audioFiles: List<File>
+            try {
+                val sessionDir = File(filesDir, "audio/${System.currentTimeMillis()}")
+                val ttsConfig = apiKeyManager.getEffectiveTtsConfig()
+                val ttsInstructions = if (ttsConfig.provider == ApiKeyManager.TTS_PROVIDER_OPENAI) {
+                    apiKeyManager.getTtsInstructions()
+                } else {
+                    null
+                }
+                val synthesizer = createTtsSynthesizer()
+                val ttsProcessor = TtsProcessor(synthesizer, sessionDir, ttsInstructions)
+                audioFiles = ttsProcessor.processText(answerText)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to synthesize reply audio", e)
+                return@launch
+            }
+
+            if (audioFiles.isEmpty()) {
+                Log.w(TAG, "TTS produced no audio for reply")
+                return@launch
+            }
+
+            if (qaPairId != null) {
+                try {
+                    withContext(Dispatchers.IO) {
+                        database.conversationDao().updateAudioFilePaths(
+                            qaPairId,
+                            audioFiles.joinToString(",") { it.absolutePath }
+                        )
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to persist synthesized audio paths", e)
+                }
+            }
+
+            onAudioReady?.invoke(audioFiles)
+            // Reuse the replay path so all playback controls work seamlessly.
+            replayAudio(audioFiles, questionText, answerText)
         }
     }
 
