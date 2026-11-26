@@ -16,6 +16,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
@@ -55,7 +56,11 @@ fun QAPairCard(
     reasoningEffort: String? = null,
     llmResponseSeconds: Int? = null,
     answerTextRich: String? = null,
-    reasoningText: String? = null
+    reasoningText: String? = null,
+    /** Whether TTS is available so silent text replies can be read aloud. */
+    canSpeak: Boolean = false,
+    /** Called when the speaker button is tapped (synthesize/replay + play). */
+    onSpeakClick: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     val timeFormat = SimpleDateFormat("h:mm a", Locale.getDefault())
@@ -166,7 +171,7 @@ fun QAPairCard(
 
                 Spacer(modifier = Modifier.height(4.dp))
 
-                // Bottom row: copy + replay buttons
+                // Bottom row: copy + speaker/replay buttons
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
@@ -181,6 +186,18 @@ fun QAPairCard(
                                 imageVector = Icons.Default.ContentCopy,
                                 contentDescription = "Copy",
                                 tint = TextSecondary
+                            )
+                        }
+                    }
+                    if (shouldShowSpeaker(displayAnswerText, audioFiles, canSpeak, onSpeakClick, onReplayClick)) {
+                        IconButton(
+                            onClick = { (onSpeakClick ?: onReplayClick)?.invoke() },
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.VolumeUp,
+                                contentDescription = "Read aloud",
+                                tint = AccentGreen
                             )
                         }
                     }
@@ -224,6 +241,19 @@ fun QAPairCard(
                         }
                     }
 
+                    if (shouldShowSpeaker(displayAnswerText, audioFiles, canSpeak, onSpeakClick, onReplayClick)) {
+                        IconButton(
+                            onClick = { (onSpeakClick ?: onReplayClick)?.invoke() },
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.VolumeUp,
+                                contentDescription = "Read aloud",
+                                tint = AccentGreen
+                            )
+                        }
+                    }
+
                     if (audioFiles != null && onReplayClick != null) {
                         IconButton(
                             onClick = onReplayClick,
@@ -240,6 +270,22 @@ fun QAPairCard(
             }
         }
     }
+}
+
+/**
+ * Speaker button visibility: the card has an answer plus a way to voice it
+ * (audio already exists, or TTS is configured), and a click handler is wired.
+ */
+private fun shouldShowSpeaker(
+    displayAnswerText: String?,
+    audioFiles: List<File>?,
+    canSpeak: Boolean,
+    onSpeakClick: (() -> Unit)?,
+    onReplayClick: (() -> Unit)?
+): Boolean {
+    if (displayAnswerText == null) return false
+    if (onSpeakClick == null && onReplayClick == null) return false
+    return audioFiles != null || canSpeak
 }
 
 private fun formatTimestampWithOrdinal(timestamp: Long): String {

@@ -30,8 +30,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.AlertDialog
@@ -41,12 +42,12 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -74,6 +75,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.slothspeak.service.SlothSpeakService
+import com.slothspeak.ui.components.ChatComposer
+import com.slothspeak.ui.components.ModelSwitcherSheet
 import com.slothspeak.ui.components.QAPairCard
 import com.slothspeak.ui.components.StatusIndicator
 import com.slothspeak.ui.theme.AccentGreen
@@ -97,10 +100,16 @@ fun MainScreen(
     val isViewingActivePipeline by viewModel.isViewingActivePipeline.collectAsState()
     val isPipelineRunning by viewModel.isPipelineRunning.collectAsState()
     val isMuted by viewModel.isMuted.collectAsState()
+    val llmProviders by viewModel.llmProviders.collectAsState()
     val showCancelConfirmation by viewModel.showCancelConfirmation.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
+
+    val activeProvider = llmProviders.firstOrNull { it.active }
+    var showModelSwitcher by remember { mutableStateOf(false) }
+    // Whether a pending (post-permission) mic tap should be a follow-up
+    var pendingVoiceIsFollowUp by remember { mutableStateOf(false) }
 
     // Refresh API key status whenever this screen becomes visible (e.g. returning from settings)
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -159,13 +168,42 @@ fun MainScreen(
             hasAskedBluetoothPermission = true
         }
         if (hasAudioPermission) {
-            viewModel.startNewQuestion()
+            // Resume whichever flow the mic tap started (follow-up vs new)
+            if (pendingVoiceIsFollowUp) {
+                viewModel.startFollowUp()
+            } else {
+                viewModel.startNewQuestion()
+            }
         } else {
             scope.launch {
                 snackbarHostState.showSnackbar(
                     "Microphone permission is required to record questions"
                 )
             }
+        }
+    }
+
+    /**
+     * Mic tap from the composer: request missing permissions, then start
+     * either a follow-up (inside an active conversation) or a new question.
+     */
+    fun startVoiceCapture() {
+        pendingVoiceIsFollowUp =
+            currentResponseId != null && viewModel.isFollowUpSupported()
+        val needsBtPermission = !hasBluetoothPermission && !hasAskedBluetoothPermission
+        if (!hasAudioPermission || !hasNotificationPermission || needsBtPermission) {
+            val perms = mutableListOf(Manifest.permission.RECORD_AUDIO)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                perms.add(Manifest.permission.POST_NOTIFICATIONS)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && needsBtPermission) {
+                perms.add(Manifest.permission.BLUETOOTH_CONNECT)
+            }
+            permissionLauncher.launch(perms.toTypedArray())
+        } else if (pendingVoiceIsFollowUp) {
+            viewModel.startFollowUp()
+        } else {
+            viewModel.startNewQuestion()
         }
     }
 
@@ -233,6 +271,15 @@ fun MainScreen(
                         ActivePipelineChip(
                             onClick = { viewModel.returnToActivePipeline() }
                         )
+                    }
+                    if (sessionItems.isNotEmpty()) {
+                        IconButton(onClick = { viewModel.goHome() }) {
+                            Icon(
+                                Icons.Default.Add,
+                                contentDescription = "New chat",
+                                tint = AccentGreen
+                            )
+                        }
                     }
                     IconButton(onClick = onNavigateToHistory) {
                         Icon(
@@ -321,14 +368,14 @@ fun MainScreen(
                                     verticalArrangement = Arrangement.Center
                                 ) {
                                     Text(
-                                        text = "Ask a question",
+                                        text = "Ask anything",
                                         style = MaterialTheme.typography.headlineMedium,
                                         textAlign = TextAlign.Center
                                     )
                                     Spacer(modifier = Modifier.height(8.dp))
                                     Text(
-                                        text = "Tap \"New Question\" to record your voice. " +
-                                                "SlothSpeak will transcribe, think deeply, and read the answer aloud.",
+                                        text = "Type a message below or tap the mic for voice chat. " +
+                                                "SlothSpeak will think deeply and give you the answer.",
                                         style = MaterialTheme.typography.bodyMedium,
                                         color = TextSecondary,
                                         textAlign = TextAlign.Center
@@ -356,7 +403,9 @@ fun MainScreen(
                                 reasoningEffort = item.reasoningEffort,
                                 llmResponseSeconds = item.llmResponseSeconds,
                                 answerTextRich = item.answerTextRich,
-                                reasoningText = item.reasoningText
+                                reasoningText = item.reasoningText,
+                                canSpeak = uiState.ttsConfigured,
+                                onSpeakClick = { viewModel.speakReply(item) }
                             )
                         }
 
@@ -402,73 +451,24 @@ fun MainScreen(
                             currentPipelineState !is SlothSpeakService.PipelineState.InteractiveEnding
 
                     if (!isProcessing) {
-                        if (uiState.voiceAvailable) {
-                            // Voice mode: show record + follow-up buttons
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(16.dp),
-                                horizontalArrangement = Arrangement.Center
-                            ) {
-                                Button(
-                                    onClick = {
-                                        val needsBtPermission = !hasBluetoothPermission && !hasAskedBluetoothPermission
-                                        if (!hasAudioPermission || !hasNotificationPermission || needsBtPermission) {
-                                            val perms = mutableListOf(Manifest.permission.RECORD_AUDIO)
-                                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                                                perms.add(Manifest.permission.POST_NOTIFICATIONS)
-                                            }
-                                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                                                perms.add(Manifest.permission.BLUETOOTH_CONNECT)
-                                            }
-                                            permissionLauncher.launch(perms.toTypedArray())
-                                        } else {
-                                            viewModel.startNewQuestion()
-                                        }
-                                    },
-                                    colors = ButtonDefaults.buttonColors(containerColor = AccentGreen),
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Text("New Question")
-                                }
-
-                                if (currentResponseId != null &&
-                                    viewModel.isFollowUpSupported() &&
-                                    (currentPipelineState is SlothSpeakService.PipelineState.Complete ||
-                                            currentPipelineState is SlothSpeakService.PipelineState.Idle)
-                                ) {
-                                    Spacer(modifier = Modifier.width(12.dp))
-                                    OutlinedButton(
-                                        onClick = {
-                                            val needsBtPerm = !hasBluetoothPermission && !hasAskedBluetoothPermission
-                                            if (!hasAudioPermission || needsBtPerm) {
-                                                val perms = mutableListOf(Manifest.permission.RECORD_AUDIO)
-                                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                                                    perms.add(Manifest.permission.BLUETOOTH_CONNECT)
-                                                }
-                                                permissionLauncher.launch(perms.toTypedArray())
-                                            } else {
-                                                viewModel.startFollowUp()
-                                            }
-                                        },
-                                        modifier = Modifier.weight(1f),
-                                        colors = ButtonDefaults.outlinedButtonColors(
-                                            contentColor = AccentGreen
-                                        )
-                                    ) {
-                                        Text("Follow Up")
+                        ChatComposer(
+                            voiceAvailable = uiState.voiceAvailable,
+                            onMicClick = { startVoiceCapture() },
+                            onVoiceUnavailable = {
+                                scope.launch {
+                                    val result = snackbarHostState.showSnackbar(
+                                        message = "Voice input needs a speech-to-text provider",
+                                        actionLabel = "Settings"
+                                    )
+                                    if (result == SnackbarResult.ActionPerformed) {
+                                        onNavigateToSettings()
                                     }
                                 }
-                            }
-                        } else {
-                            // Text-only mode: show text input bar
-                            TextInputQuestionBar(
-                                onQuestionSubmit = { viewModel.submitTextQuestion(it) },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(16.dp)
-                            )
-                        }
+                            },
+                            onSend = { viewModel.submitTextQuestion(it) },
+                            activeProvider = activeProvider,
+                            onModelPillClick = { showModelSwitcher = true }
+                        )
                     }
                 }
             }
@@ -496,6 +496,19 @@ fun MainScreen(
                 )
             }
         }
+    }
+
+    // Model switcher popup (opened from the pill below the composer)
+    if (showModelSwitcher) {
+        ModelSwitcherSheet(
+            providers = llmProviders,
+            onSelectModel = { provider, modelId -> viewModel.selectLlmModel(provider, modelId) },
+            onManageModels = {
+                showModelSwitcher = false
+                onNavigateToSettings()
+            },
+            onDismiss = { showModelSwitcher = false }
+        )
     }
 }
 
