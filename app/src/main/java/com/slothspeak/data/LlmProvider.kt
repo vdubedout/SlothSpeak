@@ -31,7 +31,13 @@ data class LlmProviderUiState(
     val thinkingEnabled: Boolean = true,
     val thinkingLevel: String = "high",
     val thinkingLevels: List<String> = emptyList(),
-    val compatProviderId: String? = null
+    val compatProviderId: String? = null,
+    /**
+     * Models the user can switch to for this provider. Built-in providers list
+     * their full model family; compatible providers expose their single
+     * configured model. Empty for legacy callers that never populate it.
+     */
+    val availableModels: List<String> = emptyList()
 ) {
     val supportsThinking: Boolean get() = thinkingLevels.isNotEmpty()
     val isCompat: Boolean get() = type == LlmProviderType.COMPAT

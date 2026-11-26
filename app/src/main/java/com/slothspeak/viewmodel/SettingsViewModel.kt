@@ -13,6 +13,7 @@ import com.slothspeak.data.CompatibleProviderManager
 import com.slothspeak.data.FutoSttLanguage
 import com.slothspeak.data.FutoSttModel
 import com.slothspeak.data.FutoSttModelManager
+import com.slothspeak.data.LlmProviderCatalog
 import com.slothspeak.data.LlmProviderType
 import com.slothspeak.data.LlmProviderUiState
 import com.slothspeak.data.SttProviderUiState
@@ -32,6 +33,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     private val apiKeyManager = ApiKeyManager(application)
     private val compatibleProviderManager = CompatibleProviderManager(application)
+    private val llmProviderCatalog = LlmProviderCatalog(apiKeyManager, compatibleProviderManager)
     private val futoModelManager = FutoSttModelManager(application)
     private val database = SlothSpeakDatabase.getInstance(application)
     private var futoDownloadJob: Job? = null
@@ -179,7 +181,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         if (wasActive) {
             apiKeyManager.setSelectedCompatProviderId(null)
             val next = buildLlmProviders().firstOrNull()
-            if (next != null) applyProviderSelection(next)
+            if (next != null) activateProvider(next)
         }
         refreshState()
     }
@@ -204,7 +206,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     // ============================================================
 
     fun activateLlmProvider(provider: LlmProviderUiState) {
-        applyProviderSelection(provider)
+        activateProvider(provider)
         refreshState()
     }
 
@@ -241,7 +243,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         apiKeyManager.deleteBuiltinLlmKey(providerKey)
         if (wasActive) {
             val next = buildLlmProviders().firstOrNull()
-            if (next != null) applyProviderSelection(next)
+            if (next != null) activateProvider(next)
         }
         refreshState()
     }
@@ -272,16 +274,9 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         _state.value = _state.value.copy(llmProviders = buildLlmProviders())
     }
 
-    private fun applyProviderSelection(provider: LlmProviderUiState) {
-        if (provider.isCompat && provider.compatProviderId != null) {
-            apiKeyManager.setSelectedCompatProviderId(provider.compatProviderId)
-        } else {
-            apiKeyManager.setSelectedModel(provider.modelId)
-            apiKeyManager.setSelectedCompatProviderId(null)
-            builtinProviderKey(provider.type)?.let { key ->
-                apiKeyManager.setBuiltinModel(key, provider.modelId)
-            }
-        }
+    /** Delegates provider activation to the shared [LlmProviderCatalog]. */
+    private fun activateProvider(provider: LlmProviderUiState) {
+        llmProviderCatalog.activateProvider(provider)
     }
 
     private fun builtinProviderKey(type: LlmProviderType): String? = when (type) {
@@ -292,64 +287,9 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         LlmProviderType.COMPAT -> null
     }
 
-    private data class ThinkingSpec(
-        val levels: List<String>,
-        val enabled: Boolean,
-        val level: String
-    )
-
+    /** Delegates provider listing to the shared [LlmProviderCatalog]. */
     private fun buildLlmProviders(): List<LlmProviderUiState> {
-        val selectedModel = apiKeyManager.getSelectedModel()
-        val selectedCompatId = apiKeyManager.getSelectedCompatProviderId()
-        val compatSelectionValid = selectedCompatId != null &&
-            compatibleProviderManager.getProvider(selectedCompatId) != null
-        val providers = mutableListOf<LlmProviderUiState>()
-
-        fun addBuiltin(type: LlmProviderType, providerKey: String) {
-            if (!apiKeyManager.hasBuiltinLlmKey(providerKey)) return
-            val models = ApiKeyManager.modelsForBuiltin(providerKey)
-            val active = !compatSelectionValid && selectedModel in models
-            val stored = apiKeyManager.getBuiltinModel(providerKey)?.takeIf { it in models }
-            val model = when {
-                active -> selectedModel
-                stored != null -> stored
-                !compatSelectionValid && selectedModel in models -> selectedModel
-                else -> ApiKeyManager.defaultBuiltinModel(providerKey)
-            }
-            val thinking = builtinThinking(type, model)
-            providers += LlmProviderUiState(
-                key = "builtin:$providerKey",
-                type = type,
-                displayName = ApiKeyManager.displayNameForBuiltin(providerKey),
-                modelId = model,
-                active = active,
-                thinkingEnabled = thinking.enabled,
-                thinkingLevel = thinking.level,
-                thinkingLevels = thinking.levels
-            )
-        }
-
-        addBuiltin(LlmProviderType.OPENAI, ApiKeyManager.LLM_PROVIDER_OPENAI)
-        addBuiltin(LlmProviderType.GEMINI, ApiKeyManager.LLM_PROVIDER_GEMINI)
-        addBuiltin(LlmProviderType.CLAUDE, ApiKeyManager.LLM_PROVIDER_CLAUDE)
-        addBuiltin(LlmProviderType.GROK, ApiKeyManager.LLM_PROVIDER_GROK)
-
-        compatibleProviderManager.getProviders().forEach { config ->
-            providers += LlmProviderUiState(
-                key = "compat:${config.id}",
-                type = LlmProviderType.COMPAT,
-                displayName = config.displayName,
-                modelId = config.modelId,
-                baseUrl = config.baseUrl,
-                active = selectedCompatId == config.id,
-                thinkingEnabled = config.thinkingEnabled,
-                thinkingLevel = config.reasoningEffort,
-                thinkingLevels = listOf("low", "high", "max"),
-                compatProviderId = config.id
-            )
-        }
-
-        return providers
+        return llmProviderCatalog.getConfiguredProviders()
     }
 
     private fun buildSttProviders(): List<SttProviderUiState> {
@@ -485,48 +425,6 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                 status = "On-device · free & offline"
             )
         )
-    }
-
-    private fun builtinThinking(type: LlmProviderType, model: String): ThinkingSpec {
-        return when (type) {
-            LlmProviderType.OPENAI -> {
-                if (model == ApiKeyManager.MODEL_PRO) {
-                    ThinkingSpec(
-                        levels = listOf(
-                            ApiKeyManager.EFFORT_MEDIUM,
-                            ApiKeyManager.EFFORT_HIGH,
-                            ApiKeyManager.EFFORT_XHIGH
-                        ),
-                        enabled = true,
-                        level = apiKeyManager.getReasoningEffort()
-                    )
-                } else ThinkingSpec(emptyList(), false, "")
-            }
-            LlmProviderType.GEMINI -> {
-                if (model == ApiKeyManager.MODEL_GEMINI_PRO || model == ApiKeyManager.MODEL_GEMINI_PRO_35) {
-                    ThinkingSpec(
-                        levels = listOf(
-                            ApiKeyManager.THINKING_LOW,
-                            ApiKeyManager.THINKING_MEDIUM,
-                            ApiKeyManager.THINKING_HIGH
-                        ),
-                        enabled = true,
-                        level = apiKeyManager.getThinkingLevel()
-                    )
-                } else ThinkingSpec(emptyList(), false, "")
-            }
-            LlmProviderType.CLAUDE -> ThinkingSpec(
-                levels = listOf(
-                    ApiKeyManager.CLAUDE_EFFORT_LOW,
-                    ApiKeyManager.CLAUDE_EFFORT_MEDIUM,
-                    ApiKeyManager.CLAUDE_EFFORT_HIGH,
-                    ApiKeyManager.CLAUDE_EFFORT_MAX
-                ),
-                enabled = true,
-                level = apiKeyManager.getClaudeEffort()
-            )
-            LlmProviderType.GROK, LlmProviderType.COMPAT -> ThinkingSpec(emptyList(), false, "")
-        }
     }
 
     fun setReasoningEffort(effort: String) {
