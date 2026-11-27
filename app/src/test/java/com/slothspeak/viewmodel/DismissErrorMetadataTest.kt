@@ -2,7 +2,9 @@ package com.slothspeak.viewmodel
 
 import com.slothspeak.service.SlothSpeakService
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class DismissErrorMetadataTest {
@@ -166,5 +168,54 @@ class DismissErrorMetadataTest {
             SlothSpeakService.Companion.DismissErrorAction.DISMISS_PIPELINE_ERROR,
             SlothSpeakService.resolveDismissErrorAction(pipelineError, isPipelineActive = false)
         )
+    }
+
+    @Test
+    fun shouldIgnoreTerminalPipelineState_guardsPendingReplyBindAgainstStaleTerminalStates() {
+        val complete = SlothSpeakService.PipelineState.Complete(
+            questionText = "Q",
+            answerText = "A",
+            responseId = "resp_1",
+            conversationId = 1L,
+            audioFiles = emptyList(),
+            model = "gpt-5.5",
+            reasoningEffort = null,
+            llmResponseSeconds = 2
+        )
+        val generating = SlothSpeakService.PipelineState.GeneratingAudio(
+            questionText = "Q",
+            answerText = "A",
+            responseId = "resp_1",
+            completedChunks = 0,
+            totalChunks = 1,
+            fromReadAloud = true
+        )
+        val error = SlothSpeakService.PipelineState.Error(
+            message = "TTS error",
+            failedStep = SlothSpeakService.FailedStep.TTS,
+            fromReadAloud = true
+        )
+
+        // Complete + count > 0 ignored; Complete + count == 0 handled
+        assertTrue(ConversationViewModel.shouldIgnoreTerminalPipelineState(complete, pendingReplyBindCount = 1))
+        assertFalse(ConversationViewModel.shouldIgnoreTerminalPipelineState(complete, pendingReplyBindCount = 0))
+
+        // Idle + count > 0 ignored; Idle + count == 0 handled
+        assertTrue(
+            ConversationViewModel.shouldIgnoreTerminalPipelineState(
+                SlothSpeakService.PipelineState.Idle,
+                pendingReplyBindCount = 1
+            )
+        )
+        assertFalse(
+            ConversationViewModel.shouldIgnoreTerminalPipelineState(
+                SlothSpeakService.PipelineState.Idle,
+                pendingReplyBindCount = 0
+            )
+        )
+
+        // Non-terminal states are never ignored even while bind is in flight
+        assertFalse(ConversationViewModel.shouldIgnoreTerminalPipelineState(generating, pendingReplyBindCount = 1))
+        assertFalse(ConversationViewModel.shouldIgnoreTerminalPipelineState(error, pendingReplyBindCount = 1))
     }
 }

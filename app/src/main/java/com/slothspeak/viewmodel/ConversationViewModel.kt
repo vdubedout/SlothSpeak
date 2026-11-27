@@ -1336,6 +1336,9 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         stateObserverJob?.cancel()
         stateObserverJob = viewModelScope.launch {
             service?.pipelineState?.collect { state ->
+                if (shouldIgnoreTerminalPipelineState(state, pendingReplyBindCount.get())) {
+                    return@collect
+                }
                 // Always mirror pipeline state (needed for indicator chip)
                 _pipelineState.value = state
 
@@ -1977,6 +1980,20 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         private const val AUTO_SEND_DELAY_MS = 2_000L
         private const val AUTO_SEND_TICK_MS = 100L
         private const val WAV_HEADER_BYTES = 44L
+
+        /**
+         * Ignores stale terminal states (`Complete` / `Idle`) while a read-aloud or replay
+         * bind is in flight so `observeServiceState` does not unbind the service or re-apply
+         * an old `Complete` before `synthesizeAndPlayReply`/`replayAudio` emits its next state.
+         */
+        internal fun shouldIgnoreTerminalPipelineState(
+            state: SlothSpeakService.PipelineState,
+            pendingReplyBindCount: Int
+        ): Boolean {
+            if (pendingReplyBindCount <= 0) return false
+            return state is SlothSpeakService.PipelineState.Complete ||
+                state is SlothSpeakService.PipelineState.Idle
+        }
 
         /**
          * Links a TTS-failed [SessionItem] to its persisted DB [SlothSpeakService.PipelineState.Error.qaPairId],
