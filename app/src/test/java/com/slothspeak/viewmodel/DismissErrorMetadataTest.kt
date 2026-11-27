@@ -1,6 +1,7 @@
 package com.slothspeak.viewmodel
 
 import com.slothspeak.service.SlothSpeakService
+import kotlinx.coroutines.Job
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -217,5 +218,52 @@ class DismissErrorMetadataTest {
         // Non-terminal states are never ignored even while bind is in flight
         assertFalse(ConversationViewModel.shouldIgnoreTerminalPipelineState(generating, pendingReplyBindCount = 1))
         assertFalse(ConversationViewModel.shouldIgnoreTerminalPipelineState(error, pendingReplyBindCount = 1))
+    }
+
+    @Test
+    fun needsObserverRestart_enforcesServiceBoundObserverActiveInvariant() {
+        val activeJob = Job()
+        val cancelledJob = Job().apply { cancel() }
+        val dummyService = Any()
+
+        try {
+            assertTrue(
+                ConversationViewModel.needsObserverRestart(
+                    service = dummyService,
+                    serviceBound = true,
+                    stateObserverJob = null
+                )
+            )
+            assertTrue(
+                ConversationViewModel.needsObserverRestart(
+                    service = dummyService,
+                    serviceBound = true,
+                    stateObserverJob = cancelledJob
+                )
+            )
+            assertFalse(
+                ConversationViewModel.needsObserverRestart(
+                    service = dummyService,
+                    serviceBound = true,
+                    stateObserverJob = activeJob
+                )
+            )
+            assertFalse(
+                ConversationViewModel.needsObserverRestart(
+                    service = null,
+                    serviceBound = true,
+                    stateObserverJob = null
+                )
+            )
+            assertFalse(
+                ConversationViewModel.needsObserverRestart(
+                    service = dummyService,
+                    serviceBound = false,
+                    stateObserverJob = null
+                )
+            )
+        } finally {
+            activeJob.cancel()
+        }
     }
 }

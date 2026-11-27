@@ -191,6 +191,8 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
+            stateObserverJob?.cancel()
+            stateObserverJob = null
             service = null
             serviceBound = false
             _isPipelineRunning.value = false
@@ -1184,6 +1186,7 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         // (e.g., after replay finishes but the binding was never released).
         service?.let { svc ->
             if (serviceBound) {
+                ensureObserverActive()
                 return CompletableDeferred(svc)
             }
         }
@@ -1329,6 +1332,13 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
                 Log.e(TAG, "Failed to bind service", e)
                 _uiState.value = _uiState.value.copy(serviceBindError = true)
             }
+        }
+    }
+
+    private fun ensureObserverActive() {
+        if (needsObserverRestart(service, serviceBound, stateObserverJob)) {
+            Log.d(TAG, "Restarting inactive stateObserverJob on bound service")
+            observeServiceState()
         }
     }
 
@@ -1727,6 +1737,7 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         viewModelScope.launch {
             try {
                 val svc = withTimeout(10_000) { deferred.await() }
+                ensureObserverActive()
                 svc.replayAudio(files, questionText, answerText)
             } catch (e: TimeoutCancellationException) {
                 Log.e(TAG, "Timed out waiting for service bind for replay", e)
@@ -1761,6 +1772,7 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         viewModelScope.launch {
             try {
                 val svc = withTimeout(10_000) { deferred.await() }
+                ensureObserverActive()
                 svc.synthesizeAndPlayReply(
                     qaPairId = item.qaPairId,
                     questionText = item.questionText,
@@ -1980,6 +1992,16 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         private const val AUTO_SEND_DELAY_MS = 2_000L
         private const val AUTO_SEND_TICK_MS = 100L
         private const val WAV_HEADER_BYTES = 44L
+
+        /**
+         * Returns true when a cached bound service exists (`service != null && serviceBound`)
+         * without an active [stateObserverJob], enforcing the `serviceBound => observer active` invariant.
+         */
+        internal fun needsObserverRestart(
+            service: Any?,
+            serviceBound: Boolean,
+            stateObserverJob: Job?
+        ): Boolean = service != null && serviceBound && stateObserverJob?.isActive != true
 
         /**
          * Ignores stale terminal states (`Complete` / `Idle`) while a read-aloud or replay
