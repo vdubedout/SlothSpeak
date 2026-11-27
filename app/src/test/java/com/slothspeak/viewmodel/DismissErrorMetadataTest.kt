@@ -80,4 +80,40 @@ class DismissErrorMetadataTest {
             ).single().qaPairId
         )
     }
+
+    @Test
+    fun resolveTtsRetryTarget_routesReadAloudAndPipelineErrorsCorrectly() {
+        val readAloudFlagged = SlothSpeakService.PipelineState.Error(
+            message = "Custom TTS server error",
+            failedStep = SlothSpeakService.FailedStep.TTS,
+            questionText = "Q",
+            answerText = "A",
+            responseId = "resp_1",
+            qaPairId = null,
+            model = "gpt-5.5",
+            fromReadAloud = true
+        )
+        assertEquals(
+            SlothSpeakService.Companion.TtsRetryTarget.READ_ALOUD,
+            SlothSpeakService.resolveTtsRetryTarget(readAloudFlagged, hasEarlyPipelinePair = false)
+        )
+
+        val readAloudWithoutEarlyPair = readAloudFlagged.copy(fromReadAloud = false, qaPairId = 42L)
+        assertEquals(
+            SlothSpeakService.Companion.TtsRetryTarget.READ_ALOUD,
+            SlothSpeakService.resolveTtsRetryTarget(readAloudWithoutEarlyPair, hasEarlyPipelinePair = false)
+        )
+
+        val pipelineTtsError = readAloudFlagged.copy(fromReadAloud = false, qaPairId = 42L)
+        assertEquals(
+            SlothSpeakService.Companion.TtsRetryTarget.PIPELINE,
+            SlothSpeakService.resolveTtsRetryTarget(pipelineTtsError, hasEarlyPipelinePair = true)
+        )
+
+        val llmError = pipelineTtsError.copy(failedStep = SlothSpeakService.FailedStep.LLM)
+        assertEquals(
+            SlothSpeakService.Companion.TtsRetryTarget.NONE,
+            SlothSpeakService.resolveTtsRetryTarget(llmError, hasEarlyPipelinePair = true)
+        )
+    }
 }

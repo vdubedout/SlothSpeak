@@ -76,6 +76,7 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
     private var serviceDeferred: CompletableDeferred<SlothSpeakService>? = null
     private var stateObserverJob: Job? = null
     private var loadConversationJob: Job? = null
+    @Volatile private var pendingReplyBind = false
 
     // Wake word detection (on-device, openWakeWord)
     private var wakeWordDetector: WakeWordDetector? = null
@@ -1376,9 +1377,9 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
                                 _sessionItems.value = items.map { it.copy(isProcessing = false) }
                             }
                         }
-                        // Only unbind if the real pipeline isn't running.
+                        // Only unbind if the real pipeline isn't running or a reply bind isn't in flight.
                         // Replay finishing emits Idle but the pipeline may still be processing.
-                        if (!_isPipelineRunning.value) {
+                        if (!_isPipelineRunning.value && !pendingReplyBind) {
                             maybeStartWakeWordDetection()
                             unbindServiceSafely()
                         }
@@ -1468,7 +1469,9 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
                     }
 
                     is SlothSpeakService.PipelineState.GeneratingAudio -> {
-                        addOrUpdateProcessingItem(state.questionText, state.answerText, answerTextRich = state.answerTextRich)
+                        if (!state.fromReadAloud) {
+                            addOrUpdateProcessingItem(state.questionText, state.answerText, answerTextRich = state.answerTextRich)
+                        }
                     }
 
                     is SlothSpeakService.PipelineState.ListeningForFollowUp -> {
@@ -1481,12 +1484,14 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
                     }
 
                     is SlothSpeakService.PipelineState.Error -> {
-                        addOrUpdateProcessingItem(
-                            state.questionText ?: "Error",
-                            state.answerText,
-                            isProcessing = false,
-                            answerTextRich = state.answerTextRich
-                        )
+                        if (!state.fromReadAloud) {
+                            addOrUpdateProcessingItem(
+                                state.questionText ?: "Error",
+                                state.answerText,
+                                isProcessing = false,
+                                answerTextRich = state.answerTextRich
+                            )
+                        }
                     }
 
                     // Complete, Idle, InteractiveEnding already handled above
@@ -1607,22 +1612,30 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
      */
     fun dismissError() {
         val currentState = _pipelineState.value
+        val isReadAloudError = (currentState as? SlothSpeakService.PipelineState.Error)?.fromReadAloud == true
         if (currentState is SlothSpeakService.PipelineState.Error &&
             currentState.failedStep == SlothSpeakService.FailedStep.TTS &&
             currentState.answerText != null
         ) {
-            currentState.conversationId?.let { _currentConversationId.value = it }
-            currentState.responseId?.takeIf { it.isNotEmpty() }?.let { _currentResponseId.value = it }
-            _sessionItems.value = applyDismissedTtsErrorMetadata(_sessionItems.value, currentState)
+            if (!isReadAloudError) {
+                currentState.conversationId?.let { _currentConversationId.value = it }
+                currentState.responseId?.takeIf { it.isNotEmpty() }?.let { _currentResponseId.value = it }
+                _sessionItems.value = applyDismissedTtsErrorMetadata(_sessionItems.value, currentState)
+            }
         } else if (currentState is SlothSpeakService.PipelineState.Error &&
-            currentState.answerText == null
+            currentState.answerText == null &&
+            !isReadAloudError
         ) {
             val items = _sessionItems.value
             if (items.lastOrNull()?.answerText == null) {
                 _sessionItems.value = items.dropLast(1)
             }
         }
+        val isBackgroundPipelineActive = _isPipelineRunning.value
         service?.dismissError()
+        if (isReadAloudError && isBackgroundPipelineActive) {
+            return
+        }
         _isPipelineRunning.value = false
         _isViewingActivePipeline.value = false
         _isMuted.value = false
@@ -1704,6 +1717,7 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
     fun replayAudio(files: List<File>, questionText: String = "", answerText: String = "") {
         stopWakeWordDetection()
         _uiState.value = _uiState.value.copy(serviceBindError = false)
+        pendingReplyBind = true
         val deferred = bindAndAwaitService()
 
         viewModelScope.launch {
@@ -1716,6 +1730,8 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to bind service for replay", e)
                 _uiState.value = _uiState.value.copy(serviceBindError = true)
+            } finally {
+                pendingReplyBind = false
             }
         }
     }
@@ -1735,15 +1751,18 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         val answerText = item.answerText ?: return
         stopWakeWordDetection()
         _uiState.value = _uiState.value.copy(serviceBindError = false)
+        pendingReplyBind = true
         val deferred = bindAndAwaitService()
 
         viewModelScope.launch {
             try {
                 val svc = withTimeout(10_000) { deferred.await() }
                 svc.synthesizeAndPlayReply(
-                    item.qaPairId,
-                    item.questionText,
-                    answerText
+                    qaPairId = item.qaPairId,
+                    questionText = item.questionText,
+                    answerText = answerText,
+                    responseId = item.responseId,
+                    model = item.model
                 ) { files ->
                     // Persist files on the matching item so replay is instant next time.
                     val items = _sessionItems.value.toMutableList()
@@ -1764,6 +1783,8 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to bind service for speak reply", e)
                 _uiState.value = _uiState.value.copy(serviceBindError = true)
+            } finally {
+                pendingReplyBind = false
             }
         }
     }

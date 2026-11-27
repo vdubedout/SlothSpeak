@@ -94,6 +94,7 @@ class SlothSpeakService : Service() {
     // TTS for an already-answered reply (synthesizeAndPlayReply); re-tapping the speaker
     // cancels the previous synthesis instead of queueing a second request.
     private var synthesisJob: Job? = null
+    @Volatile private var pendingReadAloudCallback: ((List<File>) -> Unit)? = null
 
     // Early DB persistence tracking
     @Volatile private var earlyConversationId: Long? = null
@@ -182,7 +183,8 @@ class SlothSpeakService : Service() {
             val completedChunks: Int,
             val totalChunks: Int,
             val statusMessage: String = "",
-            val answerTextRich: String? = null
+            val answerTextRich: String? = null,
+            val fromReadAloud: Boolean = false
         ) : PipelineState()
         data class Playing(
             val questionText: String,
@@ -233,7 +235,8 @@ class SlothSpeakService : Service() {
             val answerTextRich: String? = null,
             val conversationId: Long? = null,
             val qaPairId: Long? = null,
-            val model: String? = null
+            val model: String? = null,
+            val fromReadAloud: Boolean = false
         ) : PipelineState()
     }
 
@@ -1392,14 +1395,17 @@ class SlothSpeakService : Service() {
         answerTextRich: String? = null,
         conversationId: Long? = earlyConversationId,
         qaPairId: Long? = earlyQaPairId,
-        model: String? = lastLlmModel
+        model: String? = lastLlmModel,
+        fromReadAloud: Boolean = false
     ) {
         if (e is CancellationException) {
             return
         }
-        isPipelineRunning = false
-        // Don't delete early records (user might retry), but clear active indicator
-        _activeConversationId.value = null
+        if (!fromReadAloud) {
+            isPipelineRunning = false
+            // Don't delete early records (user might retry), but clear active indicator
+            _activeConversationId.value = null
+        }
         val isRetryable = e is ApiException && e.isRetryable
         val message = e.message ?: "An unexpected error occurred"
         _pipelineState.value = PipelineState.Error(
@@ -1413,7 +1419,8 @@ class SlothSpeakService : Service() {
             answerTextRich = answerTextRich,
             conversationId = conversationId,
             qaPairId = qaPairId,
-            model = model
+            model = model,
+            fromReadAloud = fromReadAloud
         )
         updateNotification("Error: $message")
     }
@@ -1572,6 +1579,19 @@ class SlothSpeakService : Service() {
                 }
             }
             FailedStep.TTS, FailedStep.PLAYBACK -> {
+                if (resolveTtsRetryTarget(currentState, earlyQaPairId != null) == TtsRetryTarget.READ_ALOUD) {
+                    val question = currentState.questionText ?: return
+                    val answer = currentState.answerText ?: return
+                    synthesizeAndPlayReply(
+                        qaPairId = currentState.qaPairId,
+                        questionText = question,
+                        answerText = answer,
+                        responseId = currentState.responseId,
+                        model = currentState.model,
+                        onAudioReady = pendingReadAloudCallback
+                    )
+                    return
+                }
                 val question = currentState.questionText ?: return
                 val answer = currentState.answerText ?: return
                 val respId = currentState.responseId ?: return
@@ -2326,7 +2346,16 @@ class SlothSpeakService : Service() {
     fun dismissError() {
         val errorState = _pipelineState.value as? PipelineState.Error ?: return
         if (isPipelineRunning || pipelineJob?.isActive == true) {
-            cancelPipeline()
+            if (errorState.fromReadAloud) {
+                // Background pipeline is still active — dismiss only the read-aloud error and restore it.
+                synthesisJob?.cancel()
+                synthesisJob = null
+                pendingReadAloudCallback = null
+                cleanupUncommittedTtsSessionDir()
+                restorePipelineState()
+            } else {
+                cancelPipeline()
+            }
             return
         }
 
@@ -2335,6 +2364,7 @@ class SlothSpeakService : Service() {
 
         synthesisJob?.cancel()
         synthesisJob = null
+        pendingReadAloudCallback = null
         followUpJob?.cancel()
         followUpJob = null
         vadRecorder?.release()
@@ -2441,6 +2471,7 @@ class SlothSpeakService : Service() {
         pipelineJob?.cancel()
         playbackJob?.cancel()
         synthesisJob?.cancel()
+        pendingReadAloudCallback = null
         // Fail closed: a tool-confirmation prompt left unanswered must never hang the pipeline
         denyPendingToolConfirmation()
         followUpJob?.cancel()
@@ -2503,6 +2534,7 @@ class SlothSpeakService : Service() {
         pipelineJob?.cancel()
         playbackJob?.cancel()
         synthesisJob?.cancel()
+        pendingReadAloudCallback = null
         // Fail closed: a tool-confirmation prompt left unanswered must never hang the pipeline
         denyPendingToolConfirmation()
         followUpJob?.cancel()
@@ -2611,6 +2643,8 @@ class SlothSpeakService : Service() {
         qaPairId: Long?,
         questionText: String,
         answerText: String,
+        responseId: String? = null,
+        model: String? = null,
         onAudioReady: ((List<File>) -> Unit)? = null
     ) {
         // Stop any active playback and stop the pipeline from emitting states
@@ -2624,12 +2658,25 @@ class SlothSpeakService : Service() {
         audioFocusManager.abandonFocus()
         deactivateMediaSession()
 
+        pendingReadAloudCallback = onAudioReady
+        _pipelineState.value = PipelineState.GeneratingAudio(
+            questionText = questionText,
+            answerText = answerText,
+            responseId = responseId ?: "",
+            completedChunks = 0,
+            totalChunks = 1,
+            statusMessage = "Generating audio...",
+            fromReadAloud = true
+        )
         updateNotification("Generating audio...")
 
         synthesisJob = serviceScope.launch {
             val audioFiles: List<File>
+            var ttsMonitorJob: Job? = null
             try {
                 val sessionDir = File(filesDir, "audio/${System.currentTimeMillis()}")
+                cleanupUncommittedTtsSessionDir()
+                uncommittedTtsSessionDir = sessionDir
                 val ttsConfig = apiKeyManager.getEffectiveTtsConfig()
                 val ttsInstructions = if (ttsConfig.provider == ApiKeyManager.TTS_PROVIDER_OPENAI) {
                     apiKeyManager.getTtsInstructions()
@@ -2638,16 +2685,49 @@ class SlothSpeakService : Service() {
                 }
                 val synthesizer = createTtsSynthesizer()
                 val ttsProcessor = TtsProcessor(synthesizer, sessionDir, ttsInstructions)
+
+                ttsMonitorJob = serviceScope.launch {
+                    ttsProcessor.progress.collect { progress ->
+                        if (progress.totalChunks > 0 && !progress.isComplete) {
+                            _pipelineState.value = PipelineState.GeneratingAudio(
+                                questionText = questionText,
+                                answerText = answerText,
+                                responseId = responseId ?: "",
+                                completedChunks = progress.completedChunks,
+                                totalChunks = progress.totalChunks,
+                                statusMessage = progress.statusMessage,
+                                fromReadAloud = true
+                            )
+                            updateNotification(
+                                "Audio ${progress.completedChunks}/${progress.totalChunks}: ${progress.statusMessage}"
+                            )
+                        }
+                    }
+                }
+
                 audioFiles = ttsProcessor.processText(answerText)
+                ttsMonitorJob.cancel()
+                uncommittedTtsSessionDir = null
+                if (audioFiles.isEmpty()) {
+                    throw IllegalStateException("TTS produced no audio")
+                }
             } catch (e: CancellationException) {
+                ttsMonitorJob?.cancel()
                 throw e
             } catch (e: Exception) {
+                ttsMonitorJob?.cancel()
                 Log.e(TAG, "Failed to synthesize reply audio", e)
-                return@launch
-            }
-
-            if (audioFiles.isEmpty()) {
-                Log.w(TAG, "TTS produced no audio for reply")
+                handleError(
+                    e = e,
+                    step = FailedStep.TTS,
+                    questionText = questionText,
+                    answerText = answerText,
+                    responseId = responseId,
+                    conversationId = null,
+                    qaPairId = qaPairId,
+                    model = model,
+                    fromReadAloud = true
+                )
                 return@launch
             }
 
@@ -2664,6 +2744,7 @@ class SlothSpeakService : Service() {
                 }
             }
 
+            pendingReadAloudCallback = null
             onAudioReady?.invoke(audioFiles)
             // Reuse the replay path so all playback controls work seamlessly.
             replayAudio(audioFiles, questionText, answerText)
@@ -2908,6 +2989,7 @@ class SlothSpeakService : Service() {
 
     override fun onDestroy() {
         cleanupUncommittedTtsSessionDir()
+        pendingReadAloudCallback = null
         pipelineJob?.cancel()
         playbackJob?.cancel()
         followUpJob?.cancel()
@@ -2930,5 +3012,32 @@ class SlothSpeakService : Service() {
         const val NOTIFICATION_ID = 1
         /** Safety net per tool call (includes user approval time; see [onCreate]). */
         private const val TOOL_CALL_TIMEOUT_MS = 10 * 60_000L
+
+        internal enum class TtsRetryTarget {
+            NONE,
+            READ_ALOUD,
+            PIPELINE
+        }
+
+        /**
+         * Determines whether retrying a TTS/playback [PipelineState.Error] should re-run
+         * on-demand reply synthesis (`synthesizeAndPlayReply`) or the main pipeline's
+         * `continuePipelineFromTts` continuation.
+         */
+        internal fun resolveTtsRetryTarget(
+            errorState: PipelineState.Error,
+            hasEarlyPipelinePair: Boolean
+        ): TtsRetryTarget {
+            if (errorState.failedStep != FailedStep.TTS &&
+                errorState.failedStep != FailedStep.PLAYBACK
+            ) {
+                return TtsRetryTarget.NONE
+            }
+            return if (errorState.fromReadAloud || (!hasEarlyPipelinePair && errorState.qaPairId != null)) {
+                TtsRetryTarget.READ_ALOUD
+            } else {
+                TtsRetryTarget.PIPELINE
+            }
+        }
     }
 }
