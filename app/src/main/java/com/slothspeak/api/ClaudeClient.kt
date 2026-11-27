@@ -55,7 +55,8 @@ class ClaudeClient(private val apiKeyManager: ApiKeyManager) {
         questionText: String,
         conversationHistory: List<Pair<String, String>>,
         effort: String,
-        webSearchEnabled: Boolean = false
+        webSearchEnabled: Boolean = false,
+        model: String = ApiKeyManager.MODEL_CLAUDE_OPUS
     ): ClaudeLlmResult {
         // Build messages array with conversation history
         val messages = mutableListOf<ClaudeMessage>()
@@ -72,7 +73,7 @@ class ClaudeClient(private val apiKeyManager: ApiKeyManager) {
         val tools = if (webSearchEnabled) listOf(ClaudeWebSearchTool()) else null
 
         val request = ClaudeRequest(
-            model = ApiKeyManager.MODEL_CLAUDE_OPUS,
+            model = model,
             maxTokens = MAX_TOKENS,
             system = apiKeyManager.getSystemPrompt(),
             messages = messages,

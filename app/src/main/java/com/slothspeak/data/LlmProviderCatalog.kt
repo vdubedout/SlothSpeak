@@ -112,7 +112,9 @@ class LlmProviderCatalog internal constructor(private val store: LlmProviderStor
     private fun builtinThinking(type: LlmProviderType, model: String): ThinkingSpec {
         return when (type) {
             LlmProviderType.OPENAI -> {
-                if (model == ApiKeyManager.MODEL_PRO) {
+                // Every current GPT-6.x model exposes reasoning effort. The deep-research
+                // model is not in OPENAI_MODELS, so it keeps its fixed effort.
+                if (ApiKeyManager.supportsOpenAiReasoningEffort(model)) {
                     ThinkingSpec(
                         levels = listOf(
                             ApiKeyManager.EFFORT_MEDIUM,
@@ -125,7 +127,8 @@ class LlmProviderCatalog internal constructor(private val store: LlmProviderStor
                 } else ThinkingSpec(emptyList(), false, "")
             }
             LlmProviderType.GEMINI -> {
-                if (model == ApiKeyManager.MODEL_GEMINI_PRO || model == ApiKeyManager.MODEL_GEMINI_PRO_35) {
+                // All Gemini 4 models expose thinking levels; the deep-research agent does not.
+                if (ApiKeyManager.supportsGeminiThinking(model)) {
                     ThinkingSpec(
                         levels = listOf(
                             ApiKeyManager.THINKING_LOW,
@@ -167,18 +170,25 @@ class LlmProviderCatalog internal constructor(private val store: LlmProviderStor
 
     companion object {
         /**
-         * Human-friendly display name for a model id (e.g. `gpt-5.5-pro` →
-         * `GPT-5.5 Pro`). Unknown ids are shown as-is.
+         * Human-friendly display name for a model id (e.g. `gpt-6.2-astra` →
+         * `GPT-6.2 Astra`). Unknown ids are shown as-is.
          */
         fun friendlyModelName(modelId: String): String = when (modelId) {
-            ApiKeyManager.MODEL_STANDARD -> "GPT-5.5"
-            ApiKeyManager.MODEL_PRO -> "GPT-5.5 Pro"
+            ApiKeyManager.MODEL_ASTRA -> "GPT-6.2 Astra"
+            ApiKeyManager.MODEL_SOL -> "GPT-6.2 Sol"
+            ApiKeyManager.MODEL_TERRA -> "GPT-6.1 Terra"
+            ApiKeyManager.MODEL_LUNA -> "GPT-6 Luna"
             ApiKeyManager.MODEL_DEEP_RESEARCH -> "o3 Deep Research"
-            ApiKeyManager.MODEL_GEMINI_PRO -> "Gemini 3.1 Pro"
-            ApiKeyManager.MODEL_GEMINI_PRO_35 -> "Gemini 3.5 Pro"
+            ApiKeyManager.MODEL_GEMINI_CARBON -> "Gemini 4 Carbon"
+            ApiKeyManager.MODEL_GEMINI_NEON -> "Gemini 4 Neon"
+            ApiKeyManager.MODEL_GEMINI_HYDROGEN -> "Gemini 4 Hydrogen"
+            ApiKeyManager.MODEL_GEMINI_ARGON -> "Gemini 4 Argon"
             ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH -> "Gemini Deep Research"
-            ApiKeyManager.MODEL_CLAUDE_OPUS -> "Claude Opus 4.8"
-            ApiKeyManager.MODEL_GROK -> "Grok 4.3"
+            ApiKeyManager.MODEL_CLAUDE_FABLE -> "Claude Fable 5.2"
+            ApiKeyManager.MODEL_CLAUDE_OPUS -> "Claude Opus 5.5"
+            ApiKeyManager.MODEL_CLAUDE_SONNET -> "Claude Sonnet 5.5"
+            ApiKeyManager.MODEL_CLAUDE_HAIKU -> "Claude Haiku 5.5"
+            ApiKeyManager.MODEL_GROK -> "Grok 4.7"
             else -> modelId
         }
     }

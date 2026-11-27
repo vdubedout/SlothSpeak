@@ -55,7 +55,7 @@ class LlmSettingsScreenshotTest {
         key = "builtin:openai",
         type = LlmProviderType.OPENAI,
         displayName = "OpenAI",
-        modelId = ApiKeyManager.MODEL_PRO,
+        modelId = ApiKeyManager.MODEL_ASTRA,
         active = true,
         thinkingEnabled = true,
         thinkingLevel = ApiKeyManager.EFFORT_HIGH,
@@ -102,7 +102,7 @@ class LlmSettingsScreenshotTest {
                     LlmSettingsSection(
                         providers = providers,
                         compatProviders = listOf(deepSeekConfig),
-                        selectedModel = ApiKeyManager.MODEL_PRO,
+                        selectedModel = ApiKeyManager.MODEL_ASTRA,
                         xSearchEnabled = false,
                         onActivate = {},
                         onSaveBuiltin = { _, _, _, _ -> },
@@ -128,11 +128,11 @@ class LlmSettingsScreenshotTest {
         rule.onNodeWithText("LLM").assertExists()
         rule.onNodeWithText("OpenAI").assertExists()
         rule.onNodeWithText("ACTIVE").assertExists()
-        rule.onNodeWithText("GPT-5.5 Pro").assertExists()
+        rule.onNodeWithText("GPT-6.2 Astra").assertExists()
         rule.onNodeWithText("Thinking · High").assertExists()
         rule.onNodeWithText("Modify").assertExists()
         rule.onNodeWithText("Claude").assertExists()
-        rule.onNodeWithText("Claude Opus 4.8").assertExists()
+        rule.onNodeWithText("Claude Opus 5.5").assertExists()
         rule.onNodeWithText("DeepSeek").assertExists()
         rule.onNodeWithText("deepseek-v4-flash").assertExists()
         rule.onNodeWithText("Add model").assertExists()

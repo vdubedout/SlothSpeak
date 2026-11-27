@@ -161,7 +161,7 @@ fun LlmSettingsSection(
         Text("Add model")
     }
 
-    if (selectedModel == ApiKeyManager.MODEL_GROK) {
+    if (ApiKeyManager.isGrokModel(selectedModel)) {
         Spacer(modifier = Modifier.height(24.dp))
         SearchSettings(
             xSearchEnabled = xSearchEnabled,
@@ -571,7 +571,7 @@ private val llmTemplates = listOf(
         type = LlmProviderType.OPENAI,
         providerKey = ApiKeyManager.LLM_PROVIDER_OPENAI,
         displayName = "OpenAI",
-        defaultModel = ApiKeyManager.MODEL_STANDARD,
+        defaultModel = ApiKeyManager.MODEL_ASTRA,
         keyPlaceholder = "sk-…"
     ),
     LlmTemplate(
@@ -580,7 +580,7 @@ private val llmTemplates = listOf(
         type = LlmProviderType.GEMINI,
         providerKey = ApiKeyManager.LLM_PROVIDER_GEMINI,
         displayName = "Gemini",
-        defaultModel = ApiKeyManager.MODEL_GEMINI_PRO,
+        defaultModel = ApiKeyManager.MODEL_GEMINI_CARBON,
         keyPlaceholder = "AIza…"
     ),
     LlmTemplate(

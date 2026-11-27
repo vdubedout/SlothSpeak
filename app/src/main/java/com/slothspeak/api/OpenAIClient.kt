@@ -127,12 +127,12 @@ class OpenAIClient(private val apiKeyManager: ApiKeyManager) {
     suspend fun createResponse(
         questionText: String,
         previousResponseId: String? = null,
-        model: String = ApiKeyManager.MODEL_PRO,
+        model: String = ApiKeyManager.MODEL_ASTRA,
         reasoningEffort: String? = null,
         webSearchEnabled: Boolean = false
     ): ResponsesResponse {
-        // Only include reasoning config for Pro model (standard model doesn't support extended thinking)
-        val reasoningConfig = if (model == ApiKeyManager.MODEL_PRO && reasoningEffort != null) {
+        // Only current GPT-6.x models expose reasoning effort; deep research keeps its own.
+        val reasoningConfig = if (ApiKeyManager.supportsOpenAiReasoningEffort(model) && reasoningEffort != null) {
             ReasoningConfig(effort = reasoningEffort)
         } else {
             null

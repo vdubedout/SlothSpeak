@@ -22,7 +22,7 @@ There is no server backend. The app calls AI provider APIs directly from the dev
 
 ## Features
 
-**Multi-provider AI** — Four built-in providers, eight models, plus generic OpenAI-compatible provider support. Switch between OpenAI GPT-5.5, Gemini 3.1 Pro, Claude Opus 4.8, Grok 4.3, Z.ai GLM 5.3, DeepSeek V4 Flash, or any self-hosted OpenAI-compatible API (Qwen via vLLM/Ollama/LM Studio). GPT-5.5 Pro, Gemini, and Claude support configurable reasoning effort/thinking level.
+**Multi-provider AI** — Four built-in providers, thirteen models, plus generic OpenAI-compatible provider support. Switch between OpenAI GPT-6.2 Astra, Gemini 4 Carbon, Claude Opus 5.5, Grok 4.7, Z.ai GLM 5.3, DeepSeek V4 Flash, or any self-hosted OpenAI-compatible API (Qwen via vLLM/Ollama/LM Studio). GPT-6.x, Gemini 4, and Claude support configurable reasoning effort/thinking level.
 
 **On-device streaming STT (English + French)** — Pick FUTO (on-device) as the Speech-to-Text provider to transcribe locally with the Nemotron 3.5 multilingual streaming model via sherpa-onnx. Audio is transcribed live while you speak: the capture screen shows the words as they arrive, then lets you review/edit the transcript with a character counter before it is sent to the LLM (auto-sends 2 seconds after your last edit). Download the ~650 MB model once, or import an existing sherpa-onnx model folder (encoder/decoder/joiner ONNX + tokens.txt). After that no API key and no network are needed for transcription. English, French, or automatic language selection.
 
@@ -70,14 +70,21 @@ There is no server backend. The app calls AI provider APIs directly from the dev
 
 | Provider | Model | ID | Notes |
 |----------|-------|----|-------|
-| OpenAI | GPT-5.5 Pro | `gpt-5.5-pro` | Configurable reasoning effort (medium/high/xhigh) |
-| OpenAI | GPT-5.5 | `gpt-5.5` | Faster, no extended thinking |
-| OpenAI | Deep Research | `o3-deep-research` | Async polling, extended web research |
-| Google | Gemini 3.1 Pro | `gemini-3.1-pro-preview` | Configurable thinking level (low/medium/high) |
-| Google | Gemini 3.5 Pro | `gemini-3.5-pro-preview` | Configurable thinking level (low/medium/high) |
-| Google | Gemini Deep Research | `deep-research-max-preview-04-2026` | Async polling with Google Search |
-| Anthropic | Claude Opus 4.8 | `claude-opus-4-8` | Adaptive thinking, effort (low/medium/high/max) |
-| xAI | Grok 4.3 | `grok-4.3` | Optional X (Twitter) search |
+| OpenAI | GPT-6.2 Astra | `gpt-6.2-astra` | Default; configurable reasoning effort (medium/high/xhigh) |
+| OpenAI | GPT-6.2 Sol | `gpt-6.2-sol` | Configurable reasoning effort (medium/high/xhigh) |
+| OpenAI | GPT-6.1 Terra | `gpt-6.1-terra` | Configurable reasoning effort (medium/high/xhigh) |
+| OpenAI | GPT-6 Luna | `gpt-6-luna` | Configurable reasoning effort (medium/high/xhigh) |
+| Google | Gemini 4 Carbon | `gemini-4-carbon` | Default; configurable thinking level (low/medium/high) |
+| Google | Gemini 4 Neon | `gemini-4-neon` | Configurable thinking level (low/medium/high) |
+| Google | Gemini 4 Hydrogen | `gemini-4-hydrogen` | Configurable thinking level (low/medium/high) |
+| Google | Gemini 4 Argon | `gemini-4-argon` | Configurable thinking level (low/medium/high) |
+| Anthropic | Claude Opus 5.5 | `claude-opus-5-5` | Default; adaptive thinking, effort (low/medium/high/max) |
+| Anthropic | Claude Fable 5.2 | `claude-fable-5-2` | Adaptive thinking, effort (low/medium/high/max) |
+| Anthropic | Claude Sonnet 5.5 | `claude-sonnet-5-5` | Adaptive thinking, effort (low/medium/high/max) |
+| Anthropic | Claude Haiku 5.5 | `claude-haiku-5-5` | Adaptive thinking, effort (low/medium/high/max) |
+| xAI | Grok 4.7 | `grok-4.7` | Optional X (Twitter) search |
+
+The older deep-research agent IDs (`o3-deep-research`, `deep-research-max-preview-04-2026`) are still supported by the pipeline for conversations that already selected them; they are no longer offered in the model picker.
 
 Each provider requires its own API key, configured in Settings. Speech-to-Text can use OpenAI, Together, any OpenAI-compatible endpoint, or the on-device FUTO provider (no key). Text-to-Speech can use OpenAI, Together, a custom endpoint, or the Android system engine.
 

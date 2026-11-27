@@ -51,7 +51,7 @@ class SettingsViewModel @JvmOverloads constructor(
     val state: StateFlow<SettingsState> = _state
 
     data class SettingsState(
-        val selectedModel: String = ApiKeyManager.MODEL_PRO,
+        val selectedModel: String = ApiKeyManager.MODEL_ASTRA,
         val reasoningEffort: String = ApiKeyManager.EFFORT_HIGH,
         val audioStorageSizeMb: Long = 0,
         val conversationCount: Int = 0,
@@ -861,6 +861,12 @@ class SettingsViewModel @JvmOverloads constructor(
 
     fun deleteBraveApiKey() {
         toolConfigManager.deleteBraveApiKey()
+        refreshTools()
+    }
+
+    /** Delay between consecutive Brave searches; clamped to 0..10000 ms by the manager. */
+    fun setBraveMinIntervalMs(intervalMs: Int) {
+        toolConfigManager.setBraveMinIntervalMs(intervalMs)
         refreshTools()
     }
 
