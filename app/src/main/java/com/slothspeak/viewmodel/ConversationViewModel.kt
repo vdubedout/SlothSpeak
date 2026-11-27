@@ -27,6 +27,8 @@ import com.slothspeak.audio.WakeWordDetector
 import com.slothspeak.data.ApiKeyManager
 import com.slothspeak.data.CompatibleProviderManager
 import com.slothspeak.data.FutoSttModelManager
+import com.slothspeak.data.LlmProviderCatalog
+import com.slothspeak.data.LlmProviderUiState
 import com.slothspeak.data.db.SlothSpeakDatabase
 import com.slothspeak.service.SlothSpeakService
 import kotlinx.coroutines.CompletableDeferred
@@ -47,6 +49,7 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
 
     private val apiKeyManager = ApiKeyManager(application)
     private val compatibleProviderManager = CompatibleProviderManager(application)
+    private val llmProviderCatalog = LlmProviderCatalog(apiKeyManager, compatibleProviderManager)
     private val database = SlothSpeakDatabase.getInstance(application)
     private val bluetoothRouter = BluetoothAudioRouter(application)
     private val audioFocusManager = AudioFocusManager(application).also {
@@ -95,6 +98,10 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
     private val _sessionItems = MutableStateFlow<List<SessionItem>>(emptyList())
     val sessionItems: StateFlow<List<SessionItem>> = _sessionItems
 
+    // Configured LLM providers for the home-screen model switcher
+    private val _llmProviders = MutableStateFlow<List<LlmProviderUiState>>(emptyList())
+    val llmProviders: StateFlow<List<LlmProviderUiState>> = _llmProviders
+
     // Whether the user is currently viewing the active pipeline's output
     private val _isViewingActivePipeline = MutableStateFlow(false)
     val isViewingActivePipeline: StateFlow<Boolean> = _isViewingActivePipeline
@@ -116,6 +123,7 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         val hasApiKey: Boolean = false,
         val voiceAvailable: Boolean = false,
         val canConverse: Boolean = false,
+        val ttsConfigured: Boolean = false,
         val showRecordingOverlay: Boolean = false,
         val lowStorageWarning: Boolean = false,
         val serviceBindError: Boolean = false,
@@ -144,7 +152,9 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         val reasoningEffort: String? = null,
         val llmResponseSeconds: Int? = null,
         val answerTextRich: String? = null,
-        val reasoningText: String? = null
+        val reasoningText: String? = null,
+        /** Room id of the saved QAPair, when this item is backed by one. */
+        val qaPairId: Long? = null
     )
 
     private val serviceConnection = object : ServiceConnection {
@@ -186,8 +196,10 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         _uiState.value = _uiState.value.copy(
             hasApiKey = apiKeyManager.hasKey(),
             voiceAvailable = computeVoiceAvailable(),
-            canConverse = computeCanConverse()
+            canConverse = computeCanConverse(),
+            ttsConfigured = apiKeyManager.isTtsConfigured()
         )
+        _llmProviders.value = llmProviderCatalog.getConfiguredProviders()
         checkStorage()
         reconnectToActiveService()
         // Arm wake word detection after first frame renders (one-shot).
@@ -205,8 +217,19 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         _uiState.value = _uiState.value.copy(
             hasApiKey = apiKeyManager.hasKey(),
             voiceAvailable = computeVoiceAvailable(),
-            canConverse = computeCanConverse()
+            canConverse = computeCanConverse(),
+            ttsConfigured = apiKeyManager.isTtsConfigured()
         )
+        _llmProviders.value = llmProviderCatalog.getConfiguredProviders()
+    }
+
+    /**
+     * Switches the active LLM model/provider via the shared catalog and
+     * refreshes the provider list (used by the home-screen model switcher).
+     */
+    fun selectLlmModel(provider: LlmProviderUiState, modelId: String = provider.modelId) {
+        llmProviderCatalog.selectModel(provider, modelId)
+        _llmProviders.value = llmProviderCatalog.getConfiguredProviders()
     }
 
     private fun computeVoiceAvailable(): Boolean {
@@ -621,7 +644,8 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
                         reasoningEffort = pair.reasoningEffort,
                         llmResponseSeconds = pair.llmResponseSeconds,
                         answerTextRich = pair.answerTextRich,
-                        reasoningText = pair.reasoningText
+                        reasoningText = pair.reasoningText,
+                        qaPairId = pair.id
                     )
                 }
             } catch (e: Exception) {
@@ -692,6 +716,13 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
     /**
      * Submit a text question (no voice/OpenAI key required).
      * Guards: blank input, must be able to converse.
+     *
+     * Inside an active conversation (with a follow-up-capable model) the
+     * existing conversation id / response id are threaded through so the
+     * message becomes a follow-up and the session list keeps growing. On a
+     * blank home screen — or when the active model can't chain (Deep Research)
+     * — a fresh conversation is started. Text answers complete silently:
+     * the user taps the speaker icon to hear the reply on demand.
      */
     fun submitTextQuestion(question: String) {
         if (question.isBlank()) return
@@ -703,11 +734,14 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
 
         stopRecording() // Safety: stop any in-progress recording
 
-        // Fresh conversation: clear session items and IDs so the new question
-        // starts a brand-new conversation (no chaining)
-        _currentConversationId.value = null
-        _currentResponseId.value = null
-        _sessionItems.value = emptyList()
+        // Follow-up chaining: only when already inside a conversation the
+        // active model can extend. Otherwise start a brand-new conversation.
+        val isFollowUp = _currentConversationId.value != null && isFollowUpSupported()
+        if (!isFollowUp) {
+            _currentConversationId.value = null
+            _currentResponseId.value = null
+            _sessionItems.value = emptyList()
+        }
 
         _isPipelineRunning.value = true
         val deferred = bindAndAwaitService()
@@ -716,7 +750,12 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
             try {
                 val svc = withTimeout(10_000) { deferred.await() }
                 _isViewingActivePipeline.value = true
-                svc.startTextPipeline(question, null, null)
+                svc.startTextPipeline(
+                    question,
+                    if (isFollowUp) _currentConversationId.value else null,
+                    if (isFollowUp) _currentResponseId.value else null,
+                    autoSpeak = false
+                )
             } catch (e: TimeoutCancellationException) {
                 _isPipelineRunning.value = false
                 Log.e(TAG, "Timed out waiting for service bind for text question", e)
@@ -1099,10 +1138,12 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
             try {
                 val svc = withTimeout(10_000) { deferred.await() }
                 _isViewingActivePipeline.value = true
+                // Voice-driven transcript (recorded audio) keeps spoken output.
                 svc.startTextPipeline(
                     question,
                     _currentConversationId.value,
-                    _currentResponseId.value
+                    _currentResponseId.value,
+                    autoSpeak = true
                 )
             } catch (e: TimeoutCancellationException) {
                 _isPipelineRunning.value = false
@@ -1301,7 +1342,8 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
                                 reasoningEffort = state.reasoningEffort,
                                 llmResponseSeconds = state.llmResponseSeconds,
                                 answerTextRich = state.answerTextRich,
-                                reasoningText = state.reasoningText
+                                reasoningText = state.reasoningText,
+                                qaPairId = state.qaPairId
                             )
                         }
                         _isViewingActivePipeline.value = false
@@ -1477,7 +1519,8 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         reasoningEffort: String? = null,
         llmResponseSeconds: Int? = null,
         answerTextRich: String? = null,
-        reasoningText: String? = null
+        reasoningText: String? = null,
+        qaPairId: Long? = null
     ) {
         val items = _sessionItems.value.toMutableList()
         // Find the target item to update:
@@ -1501,7 +1544,8 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
             reasoningEffort = reasoningEffort,
             llmResponseSeconds = llmResponseSeconds,
             answerTextRich = answerTextRich,
-            reasoningText = reasoningText
+            reasoningText = reasoningText,
+            qaPairId = qaPairId
         )
 
         if (targetIndex >= 0) {
@@ -1514,7 +1558,8 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
                 llmResponseSeconds = llmResponseSeconds ?: existing.llmResponseSeconds,
                 answerTextRich = answerTextRich ?: existing.answerTextRich,
                 reasoningText = reasoningText ?: existing.reasoningText,
-                timestamp = existing.timestamp
+                timestamp = existing.timestamp,
+                qaPairId = qaPairId ?: existing.qaPairId
             )
         } else {
             items.add(newItem)
@@ -1611,6 +1656,54 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
     }
 
     /**
+     * Speaks a session item's reply aloud. If audio already exists it is
+     * replayed directly; otherwise the service synthesizes it (persisting the
+     * paths to the DB when the item is backed by a QAPair), and the matching
+     * SessionItem is updated so subsequent taps replay without re-synthesizing.
+     */
+    fun speakReply(item: SessionItem) {
+        val audioFiles = item.audioFiles
+        if (!audioFiles.isNullOrEmpty()) {
+            replayAudio(audioFiles, item.questionText, item.answerText ?: "")
+            return
+        }
+        val answerText = item.answerText ?: return
+        stopWakeWordDetection()
+        _uiState.value = _uiState.value.copy(serviceBindError = false)
+        val deferred = bindAndAwaitService()
+
+        viewModelScope.launch {
+            try {
+                val svc = withTimeout(10_000) { deferred.await() }
+                svc.synthesizeAndPlayReply(
+                    item.qaPairId,
+                    item.questionText,
+                    answerText
+                ) { files ->
+                    // Persist files on the matching item so replay is instant next time.
+                    val items = _sessionItems.value.toMutableList()
+                    val index = items.indexOfFirst { candidate ->
+                        candidate.qaPairId != null && candidate.qaPairId == item.qaPairId ||
+                            (candidate.qaPairId == null &&
+                                candidate.timestamp == item.timestamp &&
+                                candidate.questionText == item.questionText)
+                    }
+                    if (index >= 0) {
+                        items[index] = items[index].copy(audioFiles = files)
+                        _sessionItems.value = items
+                    }
+                }
+            } catch (e: TimeoutCancellationException) {
+                Log.e(TAG, "Timed out waiting for service bind for speak reply", e)
+                _uiState.value = _uiState.value.copy(serviceBindError = true)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to bind service for speak reply", e)
+                _uiState.value = _uiState.value.copy(serviceBindError = true)
+            }
+        }
+    }
+
+    /**
      * Load a conversation from the database and display it on the main screen.
      * No audio playback is started — the user can tap play on individual Q&A pairs.
      */
@@ -1647,7 +1740,8 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
                         reasoningEffort = pair.reasoningEffort,
                         llmResponseSeconds = pair.llmResponseSeconds,
                         answerTextRich = pair.answerTextRich,
-                        reasoningText = pair.reasoningText
+                        reasoningText = pair.reasoningText,
+                        qaPairId = pair.id
                     )
                 }
 

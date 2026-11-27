@@ -55,6 +55,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.slothspeak.data.ApiKeyManager
 import com.slothspeak.data.CompatibleProviderConfig
+import com.slothspeak.data.LlmProviderCatalog
 import com.slothspeak.data.LlmProviderType
 import com.slothspeak.data.LlmProviderUiState
 import com.slothspeak.ui.theme.AccentGreen
@@ -270,7 +271,7 @@ private fun LlmActiveProviderCard(
                         StatusPill("Active")
                     }
                     Text(
-                        text = friendlyModelName(provider.modelId),
+                        text = LlmProviderCatalog.friendlyModelName(provider.modelId),
                         style = MaterialTheme.typography.bodyMedium,
                         modifier = Modifier.padding(top = 2.dp)
                     )
@@ -339,7 +340,7 @@ private fun LlmConfiguredProviderRow(
             Column(modifier = Modifier.weight(1f)) {
                 Text(text = provider.displayName, style = MaterialTheme.typography.bodyLarge)
                 Text(
-                    text = friendlyModelName(provider.modelId),
+                    text = LlmProviderCatalog.friendlyModelName(provider.modelId),
                     style = MaterialTheme.typography.bodySmall,
                     color = TextSecondary,
                     maxLines = 1
@@ -894,7 +895,7 @@ private fun LlmProviderDialog(
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(
-                                text = friendlyModelName(model),
+                                text = LlmProviderCatalog.friendlyModelName(model),
                                 style = MaterialTheme.typography.bodyLarge
                             )
                         }
@@ -1066,15 +1067,3 @@ private fun llmFieldColors() = OutlinedTextFieldDefaults.colors(
     cursorColor = AccentGreen,
     focusedLabelColor = AccentGreen
 )
-
-private fun friendlyModelName(modelId: String): String = when (modelId) {
-    ApiKeyManager.MODEL_STANDARD -> "GPT-5.5"
-    ApiKeyManager.MODEL_PRO -> "GPT-5.5 Pro"
-    ApiKeyManager.MODEL_DEEP_RESEARCH -> "o3 Deep Research"
-    ApiKeyManager.MODEL_GEMINI_PRO -> "Gemini 3.1 Pro"
-    ApiKeyManager.MODEL_GEMINI_PRO_35 -> "Gemini 3.5 Pro"
-    ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH -> "Gemini Deep Research"
-    ApiKeyManager.MODEL_CLAUDE_OPUS -> "Claude Opus 4.8"
-    ApiKeyManager.MODEL_GROK -> "Grok 4.3"
-    else -> modelId
-}
