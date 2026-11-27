@@ -125,6 +125,7 @@ class ToolsUiScreenshotTest {
                         onToggleBraveSearch = {},
                         onSaveBraveApiKey = {},
                         onDeleteBraveApiKey = {},
+                        onSetBraveMinIntervalMs = {},
                         onToggleHttpRequest = {},
                         onSetHttpWritePolicy = {},
                         onRemoveAllowedWriteHost = {},
@@ -152,6 +153,7 @@ class ToolsUiScreenshotTest {
         rule.onNodeWithText("API key configured").assertExists()
         rule.onNodeWithText("Update API key").assertExists()
         rule.onNodeWithContentDescription("Delete Brave API key").assertExists()
+        rule.onNodeWithText("Delay between Brave searches (ms)").assertExists()
 
         // HTTP card: enabled, ask-before-write selected, one allowed host, one redacted profile
         rule.onNodeWithText("HTTP Request (curl)").assertExists()
