@@ -37,13 +37,26 @@ import com.slothspeak.audio.TtsSynthesizer
 import com.slothspeak.audio.VadAudioRecorder
 import com.slothspeak.audio.WakeWordDetector
 import com.slothspeak.data.ApiKeyManager
+import com.slothspeak.data.CompatibleProviderConfig
 import com.slothspeak.data.CompatibleProviderManager
 import com.slothspeak.data.FutoSttModelManager
+import com.slothspeak.data.ToolConfigManager
 import com.slothspeak.data.db.SlothSpeakDatabase
 import com.slothspeak.data.db.entities.Conversation
 import com.slothspeak.data.db.entities.QAPair
+import com.slothspeak.harness.AgentHarness
+import com.slothspeak.harness.OpenAiCompatibleChatAdapter
+import com.slothspeak.tools.ToolConfirmationDecision
+import com.slothspeak.tools.ToolConfirmationHandler
+import com.slothspeak.tools.ToolConfirmationRequest
+import com.slothspeak.tools.ToolRegistry
+import com.slothspeak.tools.ToolTraceEntry
+import com.slothspeak.tools.formatToolSummary
+import com.slothspeak.tools.plugins.BraveSearchPlugin
+import com.slothspeak.tools.plugins.HttpRequestPlugin
 import com.slothspeak.util.SpeechTextCleaner
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -77,6 +90,10 @@ class SlothSpeakService : Service() {
     @Volatile var wakeWordForegroundActive = false
         private set
 
+    // TTS for an already-answered reply (synthesizeAndPlayReply); re-tapping the speaker
+    // cancels the previous synthesis instead of queueing a second request.
+    private var synthesisJob: Job? = null
+
     // Early DB persistence tracking
     @Volatile private var earlyConversationId: Long? = null
     @Volatile private var earlyQaPairId: Long? = null
@@ -101,6 +118,8 @@ class SlothSpeakService : Service() {
     private lateinit var grokClient: GrokClient
     private lateinit var compatibleProviderManager: CompatibleProviderManager
     private lateinit var openAiCompatibleClient: OpenAiCompatibleClient
+    private lateinit var toolConfigManager: ToolConfigManager
+    private lateinit var toolRegistry: ToolRegistry
     private lateinit var audioPlayer: AudioPlayer
     private lateinit var database: SlothSpeakDatabase
     private lateinit var audioFocusManager: AudioFocusManager
@@ -115,6 +134,13 @@ class SlothSpeakService : Service() {
     private var lastReasoningEffort: String? = null
     @Volatile private var lastAnswerTextRich: String? = null
     @Volatile private var lastReasoningText: String? = null
+    /** Serialised [ToolTraceEntry] list of the last LLM call; null when no tool ran. */
+    @Volatile private var lastToolCallsJson: String? = null
+
+    // Tool confirmation bridge: non-null while the pipeline is suspended in
+    // PipelineState.AwaitingToolConfirmation. The UI completes it via resolveToolConfirmation();
+    // cancel/stop complete it with DENY so a pipeline never hangs on an unanswered prompt.
+    @Volatile private var pendingToolConfirmation: CompletableDeferred<ToolConfirmationDecision>? = null
 
     sealed class PipelineState {
         data object Idle : PipelineState()
@@ -126,6 +152,18 @@ class SlothSpeakService : Service() {
             val statusMessage: String = "",
             val elapsedSeconds: Int = 0,
             val thinkingLabel: String = "Thinking"
+        ) : PipelineState()
+        /** A tool plugin is running (web search, HTTP request, …) as part of the LLM step. */
+        data class UsingTool(
+            val questionText: String,
+            val toolName: String,
+            val summary: String,
+            val elapsedSeconds: Int = 0
+        ) : PipelineState()
+        /** The pipeline is suspended until the user approves or denies a sensitive tool call. */
+        data class AwaitingToolConfirmation(
+            val questionText: String,
+            val request: ToolConfirmationRequest
         ) : PipelineState()
         data class ThinkingComplete(
             val questionText: String,
@@ -166,7 +204,9 @@ class SlothSpeakService : Service() {
             val answerTextRich: String? = null,
             val reasoningText: String? = null,
             /** Room id of the saved QAPair — null for legacy/replay results. */
-            val qaPairId: Long? = null
+            val qaPairId: Long? = null,
+            /** Serialised [ToolTraceEntry] list when tools were used for this answer. */
+            val toolCallsJson: String? = null
         ) : PipelineState()
         data class ListeningForFollowUp(
             val conversationId: Long,
@@ -207,6 +247,14 @@ class SlothSpeakService : Service() {
         grokClient = GrokClient(apiKeyManager)
         compatibleProviderManager = CompatibleProviderManager(applicationContext)
         openAiCompatibleClient = OpenAiCompatibleClient(compatibleProviderManager)
+        toolConfigManager = ToolConfigManager(applicationContext)
+        // The registry's call timeout also covers the time the user spends on a write-confirmation
+        // prompt, so it must be generous; the network calls themselves are bounded by each
+        // plugin's own OkHttp timeouts (connect/read/call). The user can cancel at any time.
+        toolRegistry = ToolRegistry(
+            plugins = listOf(BraveSearchPlugin(toolConfigManager), HttpRequestPlugin(toolConfigManager)),
+            callTimeoutMs = TOOL_CALL_TIMEOUT_MS
+        )
         audioPlayer = AudioPlayer()
         database = SlothSpeakDatabase.getInstance(applicationContext)
         bluetoothRouter = BluetoothAudioRouter(applicationContext)
@@ -364,6 +412,187 @@ class SlothSpeakService : Service() {
         }
     }
 
+    // ============================================================
+    // LLM step for OpenAI-compatible providers + tool plumbing
+    // ============================================================
+
+    /** Result of the LLM step for an OpenAI-compatible provider (see [runCompatLlm]). */
+    private class CompatLlmOutcome(
+        val answerText: String,
+        val reasoningText: String?,
+        val responseId: String,
+        /** Serialised [ToolTraceEntry] list, or null when no tool was used. */
+        val toolCallsJson: String?
+    )
+
+    /**
+     * Runs the LLM step for an OpenAI-compatible provider — shared by the voice, text and
+     * retry pipelines so all three take the same path through the tool harness.
+     *
+     * With at least one enabled *and* configured tool plugin the request goes through
+     * [AgentHarness]: tool calls are executed and fed back until the model answers in text.
+     * Without tools it is a single plain chat completion, exactly as before tools existed.
+     * Transport/API errors propagate to the caller.
+     *
+     * @param elapsedSecondsProvider elapsed time of the LLM step so far; forwarded to
+     *   [PipelineState.UsingTool] so the status clock does not restart per tool call.
+     */
+    private suspend fun runCompatLlm(
+        questionText: String,
+        history: List<Pair<String, String>>,
+        compatProvider: CompatibleProviderConfig,
+        elapsedSecondsProvider: () -> Int
+    ): CompatLlmOutcome {
+        lastToolCallsJson = null
+        val systemPrompt = apiKeyManager.getSystemPrompt()
+        if (toolRegistry.activeTools().isEmpty()) {
+            val result = openAiCompatibleClient.createResponse(
+                question = questionText,
+                history = history,
+                provider = compatProvider,
+                systemPrompt = systemPrompt
+            )
+            return CompatLlmOutcome(result.answerText, result.reasoningText, result.responseId, null)
+        }
+
+        // Same label the pipelines show for this provider's Thinking status.
+        val effortLabel = if (compatProvider.thinkingEnabled) compatProvider.reasoningEffort else ""
+        fun emitThinking() {
+            emitProcessingState(
+                PipelineState.Thinking(
+                    questionText = questionText,
+                    reasoningEffort = effortLabel,
+                    statusMessage = "Waiting for response...",
+                    elapsedSeconds = elapsedSecondsProvider()
+                ),
+                "Thinking${if (effortLabel.isNotEmpty()) " ($effortLabel)" else ""}..."
+            )
+        }
+
+        Log.d(TAG, "Running agent harness with tools: ${toolRegistry.activeTools().joinToString { it.name }}")
+        val result = AgentHarness(
+            OpenAiCompatibleChatAdapter(openAiCompatibleClient, compatProvider),
+            toolRegistry
+        ).run(
+            question = questionText,
+            history = history,
+            systemPrompt = systemPrompt,
+            confirmationHandler = ToolConfirmationHandler { request ->
+                awaitToolConfirmation(questionText, request)
+            },
+            onToolCallStart = { call ->
+                val summary = formatToolSummary(call)
+                emitProcessingState(
+                    PipelineState.UsingTool(questionText, call.name, summary, elapsedSecondsProvider()),
+                    summary
+                )
+            },
+            // Back to "Thinking" while the model digests the tool result.
+            onToolCallFinish = { emitThinking() }
+        )
+        lastToolCallsJson = result.toolTrace.takeIf { it.isNotEmpty() }?.let { ToolTraceEntry.toJson(it) }
+        return CompatLlmOutcome(result.answerText, result.reasoningText, result.responseId, lastToolCallsJson)
+    }
+
+    /**
+     * Suspends the pipeline until the user answers the dialog shown for [request]
+     * (MainScreen → [resolveToolConfirmation]). Cancel/stop answer a pending prompt with
+     * [ToolConfirmationDecision.DENY] so a pipeline never hangs on it; cancelling the
+     * pipeline coroutine itself propagates unchanged.
+     */
+    private suspend fun awaitToolConfirmation(
+        questionText: String,
+        request: ToolConfirmationRequest
+    ): ToolConfirmationDecision {
+        val deferred = CompletableDeferred<ToolConfirmationDecision>()
+        pendingToolConfirmation = deferred
+        emitProcessingState(
+            PipelineState.AwaitingToolConfirmation(questionText, request),
+            "Approval needed: ${request.method} ${request.host}"
+        )
+        try {
+            val decision = deferred.await()
+            // Approved or denied, the tool call is still finishing — show it as in progress
+            // (the clock restarts visually on the next timer tick).
+            emitProcessingState(
+                PipelineState.UsingTool(
+                    questionText, request.toolName, "HTTP ${request.method} ${request.host}…",
+                    currentElapsedSeconds()
+                ),
+                "Finishing HTTP ${request.method} ${request.host}"
+            )
+            return decision
+        } finally {
+            if (pendingToolConfirmation === deferred) pendingToolConfirmation = null
+        }
+    }
+
+    /**
+     * Answers the pending [PipelineState.AwaitingToolConfirmation] prompt with the user's
+     * [decision]. No-op when nothing is pending (e.g. the dialog outlived the prompt).
+     */
+    fun resolveToolConfirmation(decision: ToolConfirmationDecision) {
+        val deferred = pendingToolConfirmation ?: return
+        pendingToolConfirmation = null
+        Log.i(TAG, "Tool confirmation resolved: $decision")
+        deferred.complete(decision)
+    }
+
+    /** Fail closed: cancel/stop must never leave a confirmation prompt without an answer. */
+    private fun denyPendingToolConfirmation() {
+        val deferred = pendingToolConfirmation ?: return
+        pendingToolConfirmation = null
+        deferred.complete(ToolConfirmationDecision.DENY)
+    }
+
+    /** Elapsed seconds currently shown by the Thinking / UsingTool status (0 in other states). */
+    private fun currentElapsedSeconds(): Int {
+        val state = if (pipelineSuperseded) lastPipelineProcessingState else _pipelineState.value
+        return when (state) {
+            is PipelineState.Thinking -> state.elapsedSeconds
+            is PipelineState.UsingTool -> state.elapsedSeconds
+            else -> 0
+        }
+    }
+
+    /**
+     * Ticks once a second for the duration of the LLM step and keeps the elapsed time of the
+     * Thinking / UsingTool status current. The clock keeps running while the user is asked to
+     * approve a tool call ([PipelineState.AwaitingToolConfirmation]); the loop only ends when
+     * the LLM step is over or the pipeline was cancelled. Callers cancel the job once the LLM
+     * call returns.
+     */
+    private fun launchThinkingTimer(thinkingLabel: String, effortLabel: String): Job {
+        val effortSuffix = if (effortLabel.isNotEmpty()) " ($effortLabel)" else ""
+        return serviceScope.launch {
+            var seconds = 0
+            while (true) {
+                delay(1000)
+                seconds++
+                // Use lastPipelineProcessingState when superseded (replay overwrites _pipelineState)
+                val currentState = if (pipelineSuperseded) lastPipelineProcessingState else _pipelineState.value
+                when (currentState) {
+                    is PipelineState.Thinking -> emitProcessingState(
+                        currentState.copy(
+                            statusMessage = "Waiting for response...",
+                            elapsedSeconds = seconds
+                        ),
+                        "$thinkingLabel$effortSuffix... ${seconds}s"
+                    )
+
+                    is PipelineState.UsingTool -> emitProcessingState(
+                        currentState.copy(elapsedSeconds = seconds),
+                        "${currentState.summary} (${seconds}s)"
+                    )
+
+                    is PipelineState.AwaitingToolConfirmation -> Unit // waiting on the user — keep counting
+
+                    else -> break
+                }
+            }
+        }
+    }
+
     fun isPipelineActive(): Boolean = pipelineJob?.isActive == true
 
     /** State-based check: true when the pipeline is in any non-terminal state (includes playback). */
@@ -385,6 +614,7 @@ class SlothSpeakService : Service() {
 
     fun stopReplayOnly() {
         playbackJob?.cancel()
+        synthesisJob?.cancel()
         audioPlayer.stop()
         audioFocusManager.abandonFocus()
         deactivateMediaSession()
@@ -401,7 +631,8 @@ class SlothSpeakService : Service() {
                 pending.reasoningEffort, pending.llmResponseSeconds,
                 pending.answerTextRich,
                 reasoningText = pending.reasoningText,
-                qaPairId = pending.qaPairId
+                qaPairId = pending.qaPairId,
+                toolCallsJson = pending.toolCallsJson
             )
         } else {
             val lastState = lastPipelineProcessingState
@@ -461,6 +692,8 @@ class SlothSpeakService : Service() {
                     handleError(
                         e, FailedStep.LLM,
                         questionText = (currentState as? PipelineState.Thinking)?.questionText
+                            ?: (currentState as? PipelineState.UsingTool)?.questionText
+                            ?: (currentState as? PipelineState.AwaitingToolConfirmation)?.questionText
                             ?: (currentState as? PipelineState.ThinkingComplete)?.questionText
                             ?: (currentState as? PipelineState.GeneratingAudio)?.questionText
                             ?: (currentState as? PipelineState.Playing)?.questionText,
@@ -664,31 +897,13 @@ class SlothSpeakService : Service() {
             "Sending request..."
         )
 
-        // Launch timer coroutine to update elapsed time every second
-        val timerJob = serviceScope.launch {
-            var seconds = 0
-            while (true) {
-                delay(1000)
-                seconds++
-                // Use lastPipelineProcessingState when superseded (replay overwrites _pipelineState)
-                val currentState = if (pipelineSuperseded) lastPipelineProcessingState else _pipelineState.value
-                if (currentState is PipelineState.Thinking) {
-                    emitProcessingState(
-                        currentState.copy(
-                            statusMessage = "Waiting for response...",
-                            elapsedSeconds = seconds
-                        ),
-                        "$thinkingLabel${if (effortLabel.isNotEmpty()) " ($effortLabel)" else ""}... ${seconds}s"
-                    )
-                } else {
-                    break
-                }
-            }
-        }
+        // Updates the elapsed time of the Thinking / UsingTool status every second
+        val timerJob = launchThinkingTimer(thinkingLabel, effortLabel)
 
         val answerText: String
         val responseId: String
         lastReasoningText = null
+        lastToolCallsJson = null
         val llmStartTime = System.currentTimeMillis()
         try {
             if (isDeepResearch) {
@@ -764,12 +979,7 @@ class SlothSpeakService : Service() {
                 } else {
                     emptyList()
                 }
-                val result = openAiCompatibleClient.createResponse(
-                    question = questionText,
-                    history = history,
-                    provider = compatProvider,
-                    systemPrompt = apiKeyManager.getSystemPrompt()
-                )
+                val result = runCompatLlm(questionText, history, compatProvider) { currentElapsedSeconds() }
                 timerJob.cancel()
                 lastLlmResponseSeconds = ((System.currentTimeMillis() - llmStartTime) / 1000).toInt()
                 lastReasoningEffort = if (compatProvider.thinkingEnabled) compatProvider.reasoningEffort else null
@@ -794,7 +1004,7 @@ class SlothSpeakService : Service() {
                 questionText = questionText,
                 reasoningEffort = effortLabel,
                 statusMessage = "Response received, processing...",
-                elapsedSeconds = (_pipelineState.value as? PipelineState.Thinking)?.elapsedSeconds ?: 0
+                elapsedSeconds = currentElapsedSeconds()
             ))
         } catch (e: Exception) {
             timerJob.cancel()
@@ -875,7 +1085,8 @@ class SlothSpeakService : Service() {
                     reasoningEffort = lastReasoningEffort,
                     llmResponseSeconds = lastLlmResponseSeconds,
                     answerTextRich = lastAnswerTextRich,
-                    reasoningText = lastReasoningText
+                    reasoningText = lastReasoningText,
+                    toolCallsJson = lastToolCallsJson
                 )
                 savedQaPairId = earlyPairId
                 earlyConvId
@@ -895,7 +1106,8 @@ class SlothSpeakService : Service() {
                         reasoningEffort = lastReasoningEffort,
                         llmResponseSeconds = lastLlmResponseSeconds,
                         answerTextRich = lastAnswerTextRich,
-                        reasoningText = lastReasoningText
+                        reasoningText = lastReasoningText,
+                        toolCallsJson = lastToolCallsJson
                     )
                 )
                 convId
@@ -916,7 +1128,8 @@ class SlothSpeakService : Service() {
             audioFiles, dbModel, lastReasoningEffort, lastLlmResponseSeconds,
             lastAnswerTextRich,
             reasoningText = lastReasoningText,
-            qaPairId = savedQaPairId
+            qaPairId = savedQaPairId,
+            toolCallsJson = lastToolCallsJson
         )
     }
 
@@ -931,7 +1144,8 @@ class SlothSpeakService : Service() {
         llmResponseSeconds: Int,
         answerTextRich: String? = null,
         reasoningText: String? = null,
-        qaPairId: Long? = null
+        qaPairId: Long? = null,
+        toolCallsJson: String? = null
     ) {
         if (playbackJob?.isActive == true) {
             // Replay in progress — save result so it can be restored later
@@ -941,7 +1155,8 @@ class SlothSpeakService : Service() {
                 llmResponseSeconds = llmResponseSeconds,
                 answerTextRich = answerTextRich,
                 reasoningText = reasoningText,
-                qaPairId = qaPairId
+                qaPairId = qaPairId,
+                toolCallsJson = toolCallsJson
             )
             return
         }
@@ -964,7 +1179,8 @@ class SlothSpeakService : Service() {
                         llmResponseSeconds = llmResponseSeconds,
                         answerTextRich = answerTextRich,
                         reasoningText = reasoningText,
-                        qaPairId = qaPairId
+                        qaPairId = qaPairId,
+                        toolCallsJson = toolCallsJson
                     )
                     updateNotification("Answer ready (skipped during call)")
                     delay(1000)
@@ -984,7 +1200,8 @@ class SlothSpeakService : Service() {
                         llmResponseSeconds = llmResponseSeconds,
                         answerTextRich = answerTextRich,
                         reasoningText = reasoningText,
-                        qaPairId = qaPairId
+                        qaPairId = qaPairId,
+                        toolCallsJson = toolCallsJson
                     )
                     updateNotification("Answer ready")
                     delay(1000)
@@ -1005,7 +1222,8 @@ class SlothSpeakService : Service() {
                         llmResponseSeconds = llmResponseSeconds,
                         answerTextRich = answerTextRich,
                         reasoningText = reasoningText,
-                        qaPairId = qaPairId
+                        qaPairId = qaPairId,
+                        toolCallsJson = toolCallsJson
                     )
                     updateNotification("Answer ready (muted)")
                     delay(1000)
@@ -1089,7 +1307,8 @@ class SlothSpeakService : Service() {
                         llmResponseSeconds = llmResponseSeconds,
                         answerTextRich = answerTextRich,
                         reasoningText = reasoningText,
-                        qaPairId = qaPairId
+                        qaPairId = qaPairId,
+                        toolCallsJson = toolCallsJson
                     )
                     updateNotification("Answer complete")
                     delay(1000)
@@ -1243,27 +1462,10 @@ class SlothSpeakService : Service() {
                             )
                             updateNotification("Retrying: Sending request...")
 
-                            val timerJob = serviceScope.launch {
-                                var seconds = 0
-                                while (true) {
-                                    delay(1000)
-                                    seconds++
-                                    val cs = if (pipelineSuperseded) lastPipelineProcessingState else _pipelineState.value
-                                    if (cs is PipelineState.Thinking) {
-                                        emitProcessingState(
-                                            cs.copy(
-                                                statusMessage = "Waiting for response...",
-                                                elapsedSeconds = seconds
-                                            ),
-                                            "$retryThinkingLabel${if (effortLabel.isNotEmpty()) " ($effortLabel)" else ""}... ${seconds}s"
-                                        )
-                                    } else {
-                                        break
-                                    }
-                                }
-                            }
+                            val timerJob = launchThinkingTimer(retryThinkingLabel, effortLabel)
 
                             lastReasoningText = null
+                            lastToolCallsJson = null
                             val llmStartTime = System.currentTimeMillis()
                             val answer: String
                             val respId: String
@@ -1310,12 +1512,7 @@ class SlothSpeakService : Service() {
                                 respId = result.responseId
                             } else if (isCompat && compatProvider != null) {
                                 // Compat provider retry — no history (match Claude retry pattern)
-                                val result = openAiCompatibleClient.createResponse(
-                                    question = question,
-                                    history = emptyList(),
-                                    provider = compatProvider,
-                                    systemPrompt = apiKeyManager.getSystemPrompt()
-                                )
+                                val result = runCompatLlm(question, emptyList(), compatProvider) { currentElapsedSeconds() }
                                 timerJob.cancel()
                                 lastLlmResponseSeconds = ((System.currentTimeMillis() - llmStartTime) / 1000).toInt()
                                 lastReasoningEffort = if (compatProvider.thinkingEnabled) compatProvider.reasoningEffort else null
@@ -1340,7 +1537,8 @@ class SlothSpeakService : Service() {
                                 question, answer, respId,
                                 reasoningEffort = lastReasoningEffort,
                                 llmResponseSeconds = lastLlmResponseSeconds,
-                                answerTextRich = lastAnswerTextRich
+                                answerTextRich = lastAnswerTextRich,
+                                toolCallsJson = lastToolCallsJson
                             )
                         } catch (e: CancellationException) {
                             throw e
@@ -1367,7 +1565,8 @@ class SlothSpeakService : Service() {
                             question, answer, respId,
                             reasoningEffort = lastReasoningEffort,
                             llmResponseSeconds = lastLlmResponseSeconds,
-                            answerTextRich = richText
+                            answerTextRich = richText,
+                            toolCallsJson = lastToolCallsJson
                         )
                     } catch (e: CancellationException) {
                         throw e
@@ -1393,7 +1592,8 @@ class SlothSpeakService : Service() {
         responseId: String,
         reasoningEffort: String? = null,
         llmResponseSeconds: Int = 0,
-        answerTextRich: String? = null
+        answerTextRich: String? = null,
+        toolCallsJson: String? = null
     ) {
         val model = apiKeyManager.getSelectedModel()
         val compatId = apiKeyManager.getSelectedCompatProviderId()
@@ -1468,7 +1668,8 @@ class SlothSpeakService : Service() {
                     reasoningEffort = reasoningEffort,
                     llmResponseSeconds = llmResponseSeconds,
                     answerTextRich = answerTextRich,
-                    reasoningText = lastReasoningText
+                    reasoningText = lastReasoningText,
+                    toolCallsJson = lastToolCallsJson
                 )
                 earlyConvId
             } else {
@@ -1484,7 +1685,8 @@ class SlothSpeakService : Service() {
                         reasoningEffort = reasoningEffort,
                         llmResponseSeconds = llmResponseSeconds,
                         answerTextRich = answerTextRich,
-                        reasoningText = lastReasoningText
+                        reasoningText = lastReasoningText,
+                        toolCallsJson = lastToolCallsJson
                     )
                 )
                 convId
@@ -1504,7 +1706,8 @@ class SlothSpeakService : Service() {
             questionText, answerText, responseId, conversationId,
             audioFiles, dbModel, reasoningEffort, llmResponseSeconds,
             answerTextRich,
-            reasoningText = lastReasoningText
+            reasoningText = lastReasoningText,
+            toolCallsJson = toolCallsJson
         )
     }
 
@@ -1811,29 +2014,12 @@ class SlothSpeakService : Service() {
             "Sending request..."
         )
 
-        val timerJob = serviceScope.launch {
-            var seconds = 0
-            while (true) {
-                delay(1000)
-                seconds++
-                val currentState = if (pipelineSuperseded) lastPipelineProcessingState else _pipelineState.value
-                if (currentState is PipelineState.Thinking) {
-                    emitProcessingState(
-                        currentState.copy(
-                            statusMessage = "Waiting for response...",
-                            elapsedSeconds = seconds
-                        ),
-                        "$thinkingLabel${if (effortLabel.isNotEmpty()) " ($effortLabel)" else ""}... ${seconds}s"
-                    )
-                } else {
-                    break
-                }
-            }
-        }
+        val timerJob = launchThinkingTimer(thinkingLabel, effortLabel)
 
         val answerText: String
         val responseId: String
         lastReasoningText = null
+        lastToolCallsJson = null
         val llmStartTime = System.currentTimeMillis()
         try {
             if (isDeepResearch) {
@@ -1905,12 +2091,7 @@ class SlothSpeakService : Service() {
                 } else {
                     emptyList()
                 }
-                val result = openAiCompatibleClient.createResponse(
-                    question = questionText,
-                    history = history,
-                    provider = compatProvider,
-                    systemPrompt = apiKeyManager.getSystemPrompt()
-                )
+                val result = runCompatLlm(questionText, history, compatProvider) { currentElapsedSeconds() }
                 timerJob.cancel()
                 lastLlmResponseSeconds = ((System.currentTimeMillis() - llmStartTime) / 1000).toInt()
                 lastReasoningEffort = if (compatProvider.thinkingEnabled) compatProvider.reasoningEffort else null
@@ -2006,7 +2187,8 @@ class SlothSpeakService : Service() {
                     reasoningEffort = lastReasoningEffort,
                     llmResponseSeconds = lastLlmResponseSeconds,
                     answerTextRich = lastAnswerTextRich,
-                    reasoningText = lastReasoningText
+                    reasoningText = lastReasoningText,
+                    toolCallsJson = lastToolCallsJson
                 )
                 savedQaPairId = earlyPairId
                 earlyConvId
@@ -2027,7 +2209,8 @@ class SlothSpeakService : Service() {
                         reasoningEffort = lastReasoningEffort,
                         llmResponseSeconds = lastLlmResponseSeconds,
                         answerTextRich = lastAnswerTextRich,
-                        reasoningText = lastReasoningText
+                        reasoningText = lastReasoningText,
+                        toolCallsJson = lastToolCallsJson
                     )
                 )
                 convId
@@ -2049,7 +2232,8 @@ class SlothSpeakService : Service() {
             audioFiles, dbModel, lastReasoningEffort, lastLlmResponseSeconds,
             lastAnswerTextRich,
             reasoningText = lastReasoningText,
-            qaPairId = savedQaPairId
+            qaPairId = savedQaPairId,
+            toolCallsJson = lastToolCallsJson
         )
     }
 
@@ -2119,6 +2303,9 @@ class SlothSpeakService : Service() {
         pipelineSuperseded = true
         pipelineJob?.cancel()
         playbackJob?.cancel()
+        synthesisJob?.cancel()
+        // Fail closed: a tool-confirmation prompt left unanswered must never hang the pipeline
+        denyPendingToolConfirmation()
         followUpJob?.cancel()
         vadRecorder?.release()
         vadRecorder = null
@@ -2178,6 +2365,9 @@ class SlothSpeakService : Service() {
         pipelineSuperseded = true
         pipelineJob?.cancel()
         playbackJob?.cancel()
+        synthesisJob?.cancel()
+        // Fail closed: a tool-confirmation prompt left unanswered must never hang the pipeline
+        denyPendingToolConfirmation()
         followUpJob?.cancel()
         vadRecorder?.release()
         vadRecorder = null
@@ -2260,7 +2450,8 @@ class SlothSpeakService : Service() {
                         pending.reasoningEffort, pending.llmResponseSeconds,
                         pending.answerTextRich,
                         reasoningText = pending.reasoningText,
-                        qaPairId = pending.qaPairId
+                        qaPairId = pending.qaPairId,
+                        toolCallsJson = pending.toolCallsJson
                     )
                 } else {
                     _pipelineState.value = PipelineState.Idle
@@ -2289,13 +2480,16 @@ class SlothSpeakService : Service() {
         // while synthesis runs (same supersession contract as replayAudio).
         pipelineSuperseded = true
         playbackJob?.cancel()
+        // A rapid double-tap must not queue a second TTS request: the previous synthesis
+        // is cancelled (and never reaches replayAudio) before the new one starts.
+        synthesisJob?.cancel()
         audioPlayer.stop()
         audioFocusManager.abandonFocus()
         deactivateMediaSession()
 
         updateNotification("Generating audio...")
 
-        serviceScope.launch {
+        synthesisJob = serviceScope.launch {
             val audioFiles: List<File>
             try {
                 val sessionDir = File(filesDir, "audio/${System.currentTimeMillis()}")
@@ -2596,5 +2790,7 @@ class SlothSpeakService : Service() {
         private const val TAG = "SlothSpeakService"
         const val CHANNEL_ID = "slothspeak_processing"
         const val NOTIFICATION_ID = 1
+        /** Safety net per tool call (includes user approval time; see [onCreate]). */
+        private const val TOOL_CALL_TIMEOUT_MS = 10 * 60_000L
     }
 }

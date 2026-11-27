@@ -206,9 +206,15 @@ class BraveSearchPlugin(
             inputSchemaJson = TOOL_SCHEMA_JSON
         )
 
+        /**
+         * Read-only search client. `callTimeout` bounds the whole call on its own, so the request
+         * never depends on ToolRegistry's per-call safety net (which also covers user time spent
+         * on confirmation prompts of other plugins).
+         */
         private fun defaultHttpClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)
+            .callTimeout(25, TimeUnit.SECONDS)
             .build()
 
         // --- Response formatting ---
