@@ -841,9 +841,9 @@ class SlothSpeakService : Service() {
         val claudeEffort = apiKeyManager.getClaudeEffort()
         val webSearchEnabled = false
         val xSearchEnabled = apiKeyManager.getXSearchEnabled()
-        val isGemini = model == ApiKeyManager.MODEL_GEMINI_PRO || model == ApiKeyManager.MODEL_GEMINI_PRO_35
-        val isClaude = model == ApiKeyManager.MODEL_CLAUDE_OPUS
-        val isGrok = model == ApiKeyManager.MODEL_GROK
+        val isGemini = ApiKeyManager.isGeminiModel(model)
+        val isClaude = ApiKeyManager.isClaudeModel(model)
+        val isGrok = ApiKeyManager.isGrokModel(model)
         val isDeepResearch = model == ApiKeyManager.MODEL_DEEP_RESEARCH
         val isGeminiDeepResearch = model == ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH
         val isAnyDeepResearch = isDeepResearch || isGeminiDeepResearch
@@ -899,7 +899,7 @@ class SlothSpeakService : Service() {
             isClaude -> claudeEffort
             isGemini -> thinkingLevel
             isGrok -> ""
-            model == ApiKeyManager.MODEL_PRO -> reasoningEffort
+            ApiKeyManager.isOpenAiModel(model) -> reasoningEffort
             else -> ""
         }
         val providerName = when {
@@ -960,7 +960,7 @@ class SlothSpeakService : Service() {
                 } else {
                     emptyList()
                 }
-                val result = claudeClient.generateContent(questionText, history, claudeEffort, webSearchEnabled)
+                val result = claudeClient.generateContent(questionText, history, claudeEffort, webSearchEnabled, model)
                 timerJob.cancel()
                 lastLlmResponseSeconds = ((System.currentTimeMillis() - llmStartTime) / 1000).toInt()
                 lastReasoningEffort = claudeEffort
@@ -1011,7 +1011,7 @@ class SlothSpeakService : Service() {
                 )
                 timerJob.cancel()
                 lastLlmResponseSeconds = ((System.currentTimeMillis() - llmStartTime) / 1000).toInt()
-                lastReasoningEffort = if (model == ApiKeyManager.MODEL_PRO) reasoningEffort else null
+                lastReasoningEffort = if (ApiKeyManager.isOpenAiModel(model)) reasoningEffort else null
                 val citationResult = openAIClient.extractAnswerText(llmResponse)
                 answerText = citationResult.cleanText
                 lastAnswerTextRich = citationResult.richText
@@ -1441,9 +1441,9 @@ class SlothSpeakService : Service() {
                             val claudeEffort = apiKeyManager.getClaudeEffort()
                             val webSearchEnabled = false
                             val xSearchEnabled = apiKeyManager.getXSearchEnabled()
-                            val isGemini = model == ApiKeyManager.MODEL_GEMINI_PRO || model == ApiKeyManager.MODEL_GEMINI_PRO_35
-                            val isClaude = model == ApiKeyManager.MODEL_CLAUDE_OPUS
-                            val isGrok = model == ApiKeyManager.MODEL_GROK
+                            val isGemini = ApiKeyManager.isGeminiModel(model)
+                            val isClaude = ApiKeyManager.isClaudeModel(model)
+                            val isGrok = ApiKeyManager.isGrokModel(model)
                             val isDeepResearch = model == ApiKeyManager.MODEL_DEEP_RESEARCH
                             val isGeminiDeepResearch = model == ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH
                             val isAnyDeepResearch = isDeepResearch || isGeminiDeepResearch
@@ -1457,7 +1457,7 @@ class SlothSpeakService : Service() {
                                 isClaude -> claudeEffort
                                 isGemini -> thinkingLevel
                                 isGrok -> ""
-                                model == ApiKeyManager.MODEL_PRO -> reasoningEffort
+                                ApiKeyManager.isOpenAiModel(model) -> reasoningEffort
                                 else -> ""
                             }
                             val providerName = when {
@@ -1505,7 +1505,7 @@ class SlothSpeakService : Service() {
                                 lastAnswerTextRich = null
                                 respId = result.responseId
                             } else if (isClaude) {
-                                val result = claudeClient.generateContent(question, emptyList(), claudeEffort, webSearchEnabled)
+                                val result = claudeClient.generateContent(question, emptyList(), claudeEffort, webSearchEnabled, model)
                                 timerJob.cancel()
                                 lastLlmResponseSeconds = ((System.currentTimeMillis() - llmStartTime) / 1000).toInt()
                                 lastReasoningEffort = claudeEffort
@@ -1544,7 +1544,7 @@ class SlothSpeakService : Service() {
                                 )
                                 timerJob.cancel()
                                 lastLlmResponseSeconds = ((System.currentTimeMillis() - llmStartTime) / 1000).toInt()
-                                lastReasoningEffort = if (model == ApiKeyManager.MODEL_PRO) reasoningEffort else null
+                                lastReasoningEffort = if (ApiKeyManager.isOpenAiModel(model)) reasoningEffort else null
                                 val citationResult = openAIClient.extractAnswerText(response)
                                 answer = citationResult.cleanText
                                 lastAnswerTextRich = citationResult.richText
@@ -1964,9 +1964,9 @@ class SlothSpeakService : Service() {
         val claudeEffort = apiKeyManager.getClaudeEffort()
         val webSearchEnabled = false
         val xSearchEnabled = apiKeyManager.getXSearchEnabled()
-        val isGemini = model == ApiKeyManager.MODEL_GEMINI_PRO || model == ApiKeyManager.MODEL_GEMINI_PRO_35
-        val isClaude = model == ApiKeyManager.MODEL_CLAUDE_OPUS
-        val isGrok = model == ApiKeyManager.MODEL_GROK
+        val isGemini = ApiKeyManager.isGeminiModel(model)
+        val isClaude = ApiKeyManager.isClaudeModel(model)
+        val isGrok = ApiKeyManager.isGrokModel(model)
         val isDeepResearch = model == ApiKeyManager.MODEL_DEEP_RESEARCH
         val isGeminiDeepResearch = model == ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH
         val isAnyDeepResearch = isDeepResearch || isGeminiDeepResearch
@@ -2008,7 +2008,7 @@ class SlothSpeakService : Service() {
             isClaude -> claudeEffort
             isGemini -> thinkingLevel
             isGrok -> ""
-            model == ApiKeyManager.MODEL_PRO -> reasoningEffort
+            ApiKeyManager.isOpenAiModel(model) -> reasoningEffort
             else -> ""
         }
         val providerName = when {
@@ -2067,7 +2067,7 @@ class SlothSpeakService : Service() {
                 } else {
                     emptyList()
                 }
-                val result = claudeClient.generateContent(questionText, history, claudeEffort, webSearchEnabled)
+                val result = claudeClient.generateContent(questionText, history, claudeEffort, webSearchEnabled, model)
                 timerJob.cancel()
                 lastLlmResponseSeconds = ((System.currentTimeMillis() - llmStartTime) / 1000).toInt()
                 lastReasoningEffort = claudeEffort
@@ -2115,7 +2115,7 @@ class SlothSpeakService : Service() {
                 )
                 timerJob.cancel()
                 lastLlmResponseSeconds = ((System.currentTimeMillis() - llmStartTime) / 1000).toInt()
-                lastReasoningEffort = if (model == ApiKeyManager.MODEL_PRO) reasoningEffort else null
+                lastReasoningEffort = if (ApiKeyManager.isOpenAiModel(model)) reasoningEffort else null
                 val citationResult = openAIClient.extractAnswerText(llmResponse)
                 answerText = citationResult.cleanText
                 lastAnswerTextRich = citationResult.richText

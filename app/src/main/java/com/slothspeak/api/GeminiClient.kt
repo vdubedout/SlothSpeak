@@ -60,7 +60,7 @@ class GeminiClient(private val apiKeyManager: ApiKeyManager) {
         conversationHistory: List<Pair<String, String>>,
         thinkingLevel: String,
         webSearchEnabled: Boolean = false,
-        model: String = ApiKeyManager.MODEL_GEMINI_PRO
+        model: String = ApiKeyManager.MODEL_GEMINI_CARBON
     ): GeminiLlmResult {
         // Build contents array with conversation history
         val contents = mutableListOf<GeminiContent>()

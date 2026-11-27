@@ -37,7 +37,8 @@ class ApiKeyManager(context: Context) {
     }
 
     fun getSelectedModel(): String {
-        return prefs.getString(KEY_MODEL, MODEL_PRO) ?: MODEL_PRO
+        val stored = prefs.getString(KEY_MODEL, MODEL_ASTRA)
+        return migrateLegacyModelId(stored) ?: MODEL_ASTRA
     }
 
     fun setSelectedModel(model: String) {
@@ -156,7 +157,8 @@ class ApiKeyManager(context: Context) {
     // ============================================================
 
     fun getBuiltinModel(provider: String): String? {
-        return prefs.getString(builtinModelKey(provider), null)?.takeIf { it.isNotBlank() }
+        return migrateLegacyModelId(prefs.getString(builtinModelKey(provider), null))
+            ?.takeIf { it.isNotBlank() }
     }
 
     fun setBuiltinModel(provider: String, model: String) {
@@ -679,9 +681,23 @@ class ApiKeyManager(context: Context) {
 
         private fun builtinModelKey(provider: String): String = "$KEY_BUILTIN_MODEL_PREFIX$provider"
 
-        val OPENAI_MODELS = listOf(MODEL_STANDARD, MODEL_PRO, MODEL_DEEP_RESEARCH)
-        val GEMINI_MODELS = listOf(MODEL_GEMINI_PRO, MODEL_GEMINI_PRO_35, MODEL_GEMINI_DEEP_RESEARCH)
-        val CLAUDE_MODELS = listOf(MODEL_CLAUDE_OPUS)
+        // Built-in provider model lists: the latest flagship families. Order matters —
+        // the first entry of each list is the default when the provider is activated.
+        val OPENAI_MODELS = listOf(MODEL_ASTRA, MODEL_SOL, MODEL_TERRA, MODEL_LUNA)
+        val GEMINI_MODELS = listOf(
+            MODEL_GEMINI_CARBON,
+            MODEL_GEMINI_NEON,
+            MODEL_GEMINI_HYDROGEN,
+            MODEL_GEMINI_ARGON,
+            // Deep Research stays selectable, but exposes no thinking levels.
+            MODEL_GEMINI_DEEP_RESEARCH
+        )
+        val CLAUDE_MODELS = listOf(
+            MODEL_CLAUDE_OPUS,
+            MODEL_CLAUDE_FABLE,
+            MODEL_CLAUDE_SONNET,
+            MODEL_CLAUDE_HAIKU
+        )
         val GROK_MODELS = listOf(MODEL_GROK)
 
         fun modelsForBuiltin(provider: String): List<String> = when (provider) {
@@ -692,7 +708,47 @@ class ApiKeyManager(context: Context) {
             else -> emptyList()
         }
 
-        fun defaultBuiltinModel(provider: String): String = modelsForBuiltin(provider).firstOrNull() ?: MODEL_PRO
+        fun defaultBuiltinModel(provider: String): String =
+            modelsForBuiltin(provider).firstOrNull() ?: MODEL_ASTRA
+
+        // --- Family-aware model checks (issue #16) ---
+        // Used instead of equality checks so every new model id routes to the right client.
+
+        fun isOpenAiModel(model: String): Boolean = model in OPENAI_MODELS
+
+        /** Chat models in the Gemini family; the deep-research agent has its own branch. */
+        fun isGeminiModel(model: String): Boolean =
+            model in GEMINI_MODELS && model != MODEL_GEMINI_DEEP_RESEARCH
+
+        fun isClaudeModel(model: String): Boolean = model in CLAUDE_MODELS
+
+        fun isGrokModel(model: String): Boolean = model in GROK_MODELS
+
+        fun isDeepResearchModel(model: String): Boolean =
+            model == MODEL_DEEP_RESEARCH || model == MODEL_GEMINI_DEEP_RESEARCH
+
+        /**
+         * Whether the model exposes OpenAI reasoning-effort levels. The deep-research
+         * model is intentionally excluded: it always runs at its own fixed effort.
+         */
+        fun supportsOpenAiReasoningEffort(model: String): Boolean = model in OPENAI_MODELS
+
+        /** Whether the model exposes Gemini thinking levels (not the deep-research agent). */
+        fun supportsGeminiThinking(model: String): Boolean = isGeminiModel(model)
+
+        /**
+         * Model ids that older installs may still have persisted map to the current default
+         * of their family, so an app update never routes a stored Claude/Gemini/Grok choice
+         * through the wrong provider client. Deep-research ids are left untouched.
+         */
+        fun migrateLegacyModelId(model: String?): String? = when (model) {
+            null -> null
+            "gpt-5.5-pro", "gpt-5.5" -> MODEL_ASTRA
+            "gemini-3.1-pro-preview", "gemini-3.5-pro-preview" -> MODEL_GEMINI_CARBON
+            "claude-opus-4-8" -> MODEL_CLAUDE_OPUS
+            "grok-4.3" -> MODEL_GROK
+            else -> model
+        }
 
         fun displayNameForBuiltin(provider: String): String = when (provider) {
             LLM_PROVIDER_OPENAI -> "OpenAI"
@@ -719,12 +775,19 @@ class ApiKeyManager(context: Context) {
             "alloy", "ash", "ballad", "coral", "echo", "fable",
             "nova", "onyx", "sage", "shimmer", "verse", "marin", "cedar"
         )
-        const val MODEL_PRO = "gpt-5.5-pro"
-        const val MODEL_STANDARD = "gpt-5.5"
-        const val MODEL_GEMINI_PRO = "gemini-3.1-pro-preview"
-        const val MODEL_GEMINI_PRO_35 = "gemini-3.5-pro-preview"
-        const val MODEL_CLAUDE_OPUS = "claude-opus-4-8"
-        const val MODEL_GROK = "grok-4.3"
+        const val MODEL_ASTRA = "gpt-6.2-astra"
+        const val MODEL_SOL = "gpt-6.2-sol"
+        const val MODEL_TERRA = "gpt-6.1-terra"
+        const val MODEL_LUNA = "gpt-6-luna"
+        const val MODEL_GEMINI_CARBON = "gemini-4-carbon"
+        const val MODEL_GEMINI_NEON = "gemini-4-neon"
+        const val MODEL_GEMINI_HYDROGEN = "gemini-4-hydrogen"
+        const val MODEL_GEMINI_ARGON = "gemini-4-argon"
+        const val MODEL_CLAUDE_FABLE = "claude-fable-5-2"
+        const val MODEL_CLAUDE_OPUS = "claude-opus-5-5"
+        const val MODEL_CLAUDE_SONNET = "claude-sonnet-5-5"
+        const val MODEL_CLAUDE_HAIKU = "claude-haiku-5-5"
+        const val MODEL_GROK = "grok-4.7"
         const val MODEL_DEEP_RESEARCH = "o3-deep-research"
         const val MODEL_GEMINI_DEEP_RESEARCH = "deep-research-max-preview-04-2026"
         const val CLAUDE_EFFORT_LOW = "low"

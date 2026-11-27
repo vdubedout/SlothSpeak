@@ -111,6 +111,9 @@ class BraveSearchPluginTest {
         securePrefs = context.getSharedPreferences("test_brave_secure", Context.MODE_PRIVATE)
         clearPrefs()
         manager = ToolConfigManager(configPrefs, securePrefs)
+        // Most tests are about request/response handling; the rate limiter has its own
+        // section and would otherwise add a real one-second delay between calls.
+        manager.setBraveMinIntervalMs(0)
         api = MockBraveApi()
         client = OkHttpClient.Builder().addInterceptor(api).build()
         plugin = BraveSearchPlugin(manager, client)
@@ -591,6 +594,104 @@ class BraveSearchPluginTest {
 
         assertTrue(result.isError)
         assertEquals("Brave Search returned an unexpected response.", result.content)
+    }
+
+    // --- Request spacing (issue #12) ---
+
+    /** Virtual clock + sleeper so spacing assertions never wait for real time. */
+    private class FakeClock(private var now: Long = 1_000_000L) {
+        val sleeps = mutableListOf<Long>()
+
+        @Synchronized
+        fun nowMs(): Long = now
+
+        @Synchronized
+        fun recordSleep(ms: Long) {
+            sleeps += ms
+            now += ms
+        }
+
+        val sleep: suspend (Long) -> Unit = { ms -> recordSleep(ms) }
+    }
+
+    private fun rateLimitedPlugin(clock: FakeClock) = BraveSearchPlugin(
+        manager,
+        client,
+        nowMs = clock::nowMs,
+        sleepMs = clock.sleep
+    )
+
+    @Test
+    fun execute_spacesSequentialSearchesByTheDefaultInterval() = runBlocking {
+        configured()
+        manager.setBraveMinIntervalMs(ToolConfigManager.DEFAULT_BRAVE_MIN_INTERVAL_MS)
+        val clock = FakeClock()
+        val spaced = rateLimitedPlugin(clock)
+
+        spaced.execute(call(id = "call_1"))
+        spaced.execute(call(id = "call_2"))
+
+        assertEquals(2, api.requests.size)
+        assertEquals(listOf(1000L), clock.sleeps)
+    }
+
+    @Test
+    fun execute_honoursAConfiguredInterval() = runBlocking {
+        configured()
+        manager.setBraveMinIntervalMs(2500)
+        val clock = FakeClock()
+        val spaced = rateLimitedPlugin(clock)
+
+        spaced.execute(call())
+        spaced.execute(call())
+        spaced.execute(call())
+
+        assertEquals(3, api.requests.size)
+        assertEquals(listOf(2500L, 2500L), clock.sleeps)
+    }
+
+    @Test
+    fun execute_zeroIntervalMeansNoDelay() = runBlocking {
+        configured()
+        manager.setBraveMinIntervalMs(0)
+        val clock = FakeClock()
+        val spaced = rateLimitedPlugin(clock)
+
+        spaced.execute(call())
+        spaced.execute(call())
+
+        assertEquals(2, api.requests.size)
+        assertTrue(clock.sleeps.isEmpty())
+    }
+
+    @Test
+    fun execute_simultaneousSearchesAreSerialisedByTheSharedRateLimiter() = runBlocking {
+        configured()
+        manager.setBraveMinIntervalMs(1000)
+        val clock = FakeClock()
+        val spaced = rateLimitedPlugin(clock)
+
+        val first = launch(Dispatchers.Default) { spaced.execute(call(id = "call_1")) }
+        val second = launch(Dispatchers.Default) { spaced.execute(call(id = "call_2")) }
+        first.join()
+        second.join()
+
+        assertEquals(2, api.requests.size)
+        assertEquals(1000L, clock.sleeps.sum())
+    }
+
+    @Test
+    fun execute_noSpacingForFailuresThatNeverReachTheApi() = runBlocking {
+        // Argument / key validation short-circuits before the rate limiter claims a slot.
+        manager.setBraveMinIntervalMs(1000)
+        val clock = FakeClock()
+        val spaced = rateLimitedPlugin(clock)
+
+        val result = spaced.execute(call(args = "{bad"))
+
+        assertTrue(result.isError)
+        assertTrue(clock.sleeps.isEmpty())
+        assertTrue(api.requests.isEmpty())
     }
 
     // --- Argument / credential validation (no request must be sent) ---

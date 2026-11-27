@@ -17,6 +17,8 @@ enum class HttpWritePolicy { ASK, ALWAYS_ALLOW }
 data class ToolsSettingsState(
     val braveSearchEnabled: Boolean = false,
     val braveApiKeyConfigured: Boolean = false,
+    /** Minimum spacing between consecutive Brave HTTP calls, in milliseconds. */
+    val braveMinIntervalMs: Int = ToolConfigManager.DEFAULT_BRAVE_MIN_INTERVAL_MS,
     val httpRequestEnabled: Boolean = false,
     val httpWritePolicy: HttpWritePolicy = HttpWritePolicy.ASK,
     val allowedWriteHosts: List<String> = emptyList(),
@@ -61,6 +63,7 @@ class ToolConfigManager internal constructor(
     fun snapshot(): ToolsSettingsState = ToolsSettingsState(
         braveSearchEnabled = isPluginEnabled(PLUGIN_BRAVE_SEARCH),
         braveApiKeyConfigured = hasBraveApiKey(),
+        braveMinIntervalMs = getBraveMinIntervalMs(),
         httpRequestEnabled = isPluginEnabled(PLUGIN_HTTP_REQUEST),
         httpWritePolicy = getHttpWritePolicy(),
         allowedWriteHosts = getAllowedWriteHosts().toList(),
@@ -95,6 +98,24 @@ class ToolConfigManager internal constructor(
 
     fun hasBraveApiKey(): Boolean {
         return getBraveApiKey() != null
+    }
+
+    // --- Brave Search request spacing ---
+
+    /**
+     * Delay enforced between consecutive Brave HTTP calls. Brave's free plan allows
+     * roughly one request per second, so parallel tool calls from the model would
+     * otherwise collide with HTTP 429.
+     */
+    fun getBraveMinIntervalMs(): Int {
+        return configPrefs.getInt(KEY_BRAVE_MIN_INTERVAL_MS, DEFAULT_BRAVE_MIN_INTERVAL_MS)
+            .coerceIn(MIN_BRAVE_MIN_INTERVAL_MS, MAX_BRAVE_MIN_INTERVAL_MS)
+    }
+
+    fun setBraveMinIntervalMs(intervalMs: Int) {
+        configPrefs.edit()
+            .putInt(KEY_BRAVE_MIN_INTERVAL_MS, intervalMs.coerceIn(MIN_BRAVE_MIN_INTERVAL_MS, MAX_BRAVE_MIN_INTERVAL_MS))
+            .apply()
     }
 
     // --- HTTP write policy ---
@@ -257,8 +278,14 @@ class ToolConfigManager internal constructor(
         private const val PREFS_CONFIG = "tool_config_prefs"
         private const val PREFS_SECURE = "tool_config_secure_prefs"
 
+        /** Default spacing between Brave Search requests (Brave free plan: ~1 req/s). */
+        const val DEFAULT_BRAVE_MIN_INTERVAL_MS = 1000
+        const val MIN_BRAVE_MIN_INTERVAL_MS = 0
+        const val MAX_BRAVE_MIN_INTERVAL_MS = 10000
+
         private const val KEY_PLUGIN_ENABLED_PREFIX = "plugin_enabled_"
         private const val KEY_BRAVE_API_KEY = "brave_api_key"
+        private const val KEY_BRAVE_MIN_INTERVAL_MS = "brave_min_interval_ms"
         private const val KEY_HTTP_WRITE_POLICY = "http_write_policy"
         private const val KEY_ALLOWED_WRITE_HOSTS = "http_allowed_write_hosts"
         private const val KEY_MAX_TOOL_CALLS = "max_tool_calls"
