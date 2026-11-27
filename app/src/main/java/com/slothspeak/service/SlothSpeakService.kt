@@ -106,6 +106,7 @@ class SlothSpeakService : Service() {
     private var vadRecorder: VadAudioRecorder? = null
     private var followUpJob: Job? = null
     private var onDeviceTtsSynthesizer: OnDeviceTtsSynthesizer? = null
+    @Volatile private var pendingTtsSessionDir: File? = null
 
     // Wake word trigger state flow — observed by the ViewModel to start a fresh New Question
     private val _wakeWordTriggered = MutableStateFlow(false)
@@ -226,7 +227,8 @@ class SlothSpeakService : Service() {
             val answerText: String? = null,
             val responseId: String? = null,
             val isRetryable: Boolean = true,
-            val answerTextRich: String? = null
+            val answerTextRich: String? = null,
+            val conversationId: Long? = null
         ) : PipelineState()
     }
 
@@ -1018,6 +1020,8 @@ class SlothSpeakService : Service() {
         val audioFiles: List<File>
         if (apiKeyManager.isTtsConfigured()) {
             val sessionDir = File(filesDir, "audio/${System.currentTimeMillis()}")
+            cleanupPendingTtsSessionDir()
+            pendingTtsSessionDir = sessionDir
             val ttsConfig = apiKeyManager.getEffectiveTtsConfig()
             val ttsInstructions = if (ttsConfig.provider == ApiKeyManager.TTS_PROVIDER_OPENAI) {
                 apiKeyManager.getTtsInstructions()
@@ -1051,6 +1055,7 @@ class SlothSpeakService : Service() {
 
             try {
                 audioFiles = ttsProcessor.processText(ttsText)
+                pendingTtsSessionDir = null
             } catch (e: Exception) {
                 ttsMonitorJob.cancel()
                 handleError(
@@ -1280,7 +1285,8 @@ class SlothSpeakService : Service() {
                         questionText = questionText,
                         answerText = answerText,
                         responseId = responseId,
-                        answerTextRich = answerTextRich
+                        answerTextRich = answerTextRich,
+                        conversationId = conversationId
                     )
                     return@launch
                 }
@@ -1375,7 +1381,8 @@ class SlothSpeakService : Service() {
         questionText: String? = null,
         answerText: String? = null,
         responseId: String? = null,
-        answerTextRich: String? = null
+        answerTextRich: String? = null,
+        conversationId: Long? = earlyConversationId
     ) {
         if (e is CancellationException) {
             return
@@ -1393,7 +1400,8 @@ class SlothSpeakService : Service() {
             answerText = answerText,
             responseId = responseId,
             isRetryable = isRetryable || step != FailedStep.TRANSCRIPTION,
-            answerTextRich = answerTextRich
+            answerTextRich = answerTextRich,
+            conversationId = conversationId
         )
         updateNotification("Error: $message")
     }
@@ -1603,6 +1611,8 @@ class SlothSpeakService : Service() {
         val audioFiles: List<File>
         if (apiKeyManager.isTtsConfigured()) {
             val sessionDir = File(filesDir, "audio/${System.currentTimeMillis()}")
+            cleanupPendingTtsSessionDir()
+            pendingTtsSessionDir = sessionDir
             val ttsConfig = apiKeyManager.getEffectiveTtsConfig()
             val ttsInstructions = if (ttsConfig.provider == ApiKeyManager.TTS_PROVIDER_OPENAI) {
                 apiKeyManager.getTtsInstructions()
@@ -1636,6 +1646,7 @@ class SlothSpeakService : Service() {
 
             try {
                 audioFiles = ttsProcessor.processText(ttsText)
+                pendingTtsSessionDir = null
             } catch (e: Exception) {
                 ttsMonitorJob.cancel()
                 handleError(
@@ -2127,6 +2138,8 @@ class SlothSpeakService : Service() {
             audioFiles = emptyList()
         } else if (apiKeyManager.isTtsConfigured()) {
             val sessionDir = File(filesDir, "audio/${System.currentTimeMillis()}")
+            cleanupPendingTtsSessionDir()
+            pendingTtsSessionDir = sessionDir
             val ttsConfig = apiKeyManager.getEffectiveTtsConfig()
             val ttsInstructions = if (ttsConfig.provider == ApiKeyManager.TTS_PROVIDER_OPENAI) {
                 apiKeyManager.getTtsInstructions()
@@ -2154,6 +2167,7 @@ class SlothSpeakService : Service() {
 
             try {
                 audioFiles = ttsProcessor.processText(answerText)
+                pendingTtsSessionDir = null
             } catch (e: Exception) {
                 ttsMonitorJob.cancel()
                 handleError(
@@ -2273,8 +2287,113 @@ class SlothSpeakService : Service() {
         stopSelfWithWakeWordGuard()
     }
 
+    private fun cleanupPendingTtsSessionDir() {
+        val tempAudioDir = pendingTtsSessionDir ?: return
+        pendingTtsSessionDir = null
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO).launch {
+            try {
+                if (tempAudioDir.exists()) {
+                    tempAudioDir.deleteRecursively()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to clean up temp TTS audio dir", e)
+            }
+        }
+    }
+
+    /**
+     * Dismisses an active pipeline error and returns to [PipelineState.Idle].
+     * Stops foreground work / clears notification when no pipeline is running,
+     * fails closed any pending tool confirmation, and cleans up incomplete temp audio.
+     * When TTS failed after the LLM already answered, persists the text answer so
+     * history stays intact and follow-up questions remain possible.
+     */
+    fun dismissError() {
+        val errorState = _pipelineState.value as? PipelineState.Error
+
+        // Fail closed: any pending tool confirmation must never hang.
+        denyPendingToolConfirmation()
+
+        synthesisJob?.cancel()
+        synthesisJob = null
+        followUpJob?.cancel()
+        followUpJob = null
+        vadRecorder?.release()
+        vadRecorder = null
+        bluetoothRouter.stopBluetoothRecordingRoute()
+        cleanupPendingTtsSessionDir()
+
+        val pairId = earlyQaPairId
+        val convId = earlyConversationId
+        val wasNew = earlyConversationWasNew
+        earlyConversationId = null
+        earlyQaPairId = null
+        earlyConversationWasNew = false
+        _activeConversationId.value = null
+
+        if (pairId != null) {
+            if (errorState != null && errorState.failedStep == FailedStep.TTS && errorState.answerText != null) {
+                val model = apiKeyManager.getSelectedModel()
+                val compatId = apiKeyManager.getSelectedCompatProviderId()
+                val compatProvider = compatibleProviderManager.getProvider(compatId ?: "")
+                val dbModel = compatProvider?.modelId ?: model
+                val answer = errorState.answerText
+                val respId = errorState.responseId ?: ""
+                val rich = errorState.answerTextRich
+                val reasoning = lastReasoningText
+                val effort = lastReasoningEffort
+                val llmSec = lastLlmResponseSeconds
+                val toolsJson = lastToolCallsJson
+                kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO).launch {
+                    try {
+                        database.conversationDao().updateQAPairResult(
+                            qaPairId = pairId,
+                            answerText = answer,
+                            audioFilePaths = "",
+                            responseId = respId,
+                            model = dbModel,
+                            reasoningEffort = effort,
+                            llmResponseSeconds = llmSec,
+                            answerTextRich = rich,
+                            reasoningText = reasoning,
+                            toolCallsJson = toolsJson
+                        )
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to persist answer text on TTS error dismiss", e)
+                    }
+                }
+            } else {
+                kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO).launch {
+                    try {
+                        database.conversationDao().deleteQAPair(pairId)
+                        if (wasNew && convId != null) {
+                            val remaining = database.conversationDao().getQAPairCountForConversation(convId)
+                            if (remaining == 0) {
+                                database.conversationDao().deleteConversation(convId)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to clean up dismissed early DB records", e)
+                    }
+                }
+            }
+        }
+
+        _pipelineState.value = PipelineState.Idle
+
+        if (!isPipelineRunning) {
+            isMuted = false
+            playbackJob?.cancel()
+            audioPlayer.stop()
+            audioFocusManager.abandonFocus()
+            deactivateMediaSession()
+            stopSelfWithWakeWordGuard()
+        }
+    }
+
     fun cancelPipeline() {
         isMuted = false
+        cleanupPendingTtsSessionDir()
         // Clean up early DB records
         val cancelledQaPairId = earlyQaPairId
         val cancelledConvId = earlyConversationId

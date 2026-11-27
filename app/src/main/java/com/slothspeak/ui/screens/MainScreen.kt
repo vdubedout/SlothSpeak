@@ -435,6 +435,7 @@ fun MainScreen(
                             pipelineState = currentPipelineState,
                             onRetry = { viewModel.retryFromError() },
                             onCancel = { viewModel.requestCancelPipeline() },
+                            onDismissError = { viewModel.dismissError() },
                             onStop = { viewModel.stopPlayback() },
                             onRestartPlayback = { viewModel.restartPlayback() },
                             onRewind20s = { viewModel.seekRelative(-20_000) },

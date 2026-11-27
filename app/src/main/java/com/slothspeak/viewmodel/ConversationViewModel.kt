@@ -1600,6 +1600,36 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         service?.retryFromError()
     }
 
+    /**
+     * Dismisses a pipeline error so the user can continue chatting or reading.
+     * Preserves conversation/response IDs when TTS failed after an LLM answer so
+     * follow-up questions continue in the same thread.
+     */
+    fun dismissError() {
+        val currentState = _pipelineState.value
+        if (currentState is SlothSpeakService.PipelineState.Error &&
+            currentState.failedStep == SlothSpeakService.FailedStep.TTS &&
+            currentState.answerText != null
+        ) {
+            currentState.conversationId?.let { _currentConversationId.value = it }
+            currentState.responseId?.takeIf { it.isNotEmpty() }?.let { _currentResponseId.value = it }
+        } else if (currentState is SlothSpeakService.PipelineState.Error &&
+            currentState.answerText == null
+        ) {
+            val items = _sessionItems.value
+            if (items.lastOrNull()?.answerText == null) {
+                _sessionItems.value = items.dropLast(1)
+            }
+        }
+        service?.dismissError()
+        _isPipelineRunning.value = false
+        _isViewingActivePipeline.value = false
+        _isMuted.value = false
+        _pipelineState.value = SlothSpeakService.PipelineState.Idle
+        unbindServiceSafely()
+        maybeStartWakeWordDetection()
+    }
+
     /** Answers the service's pending tool write-confirmation prompt (see [SlothSpeakService.resolveToolConfirmation]). */
     fun resolveToolConfirmation(decision: ToolConfirmationDecision) {
         service?.resolveToolConfirmation(decision)

@@ -386,6 +386,77 @@ class ToolsUiScreenshotTest {
         rule.onRoot().captureRoboImage("build/ui-screenshots/statusIndicator_awaitingToolConfirmation.png")
     }
 
+    @Test
+    fun statusIndicator_error_showsRetryAndCancel_png() {
+        var retried = 0
+        var dismissed = 0
+        val errorMessage = "On-device TTS request rejected (code=-1, chars=4050, engineLimit=4000)"
+        val state = SlothSpeakService.PipelineState.Error(
+            message = errorMessage,
+            failedStep = SlothSpeakService.FailedStep.TTS,
+            questionText = "Explain quantum error correction",
+            answerText = "Quantum error correction protects logical qubits...",
+            responseId = "resp_123",
+            isRetryable = true
+        )
+        rule.setContent {
+            SlothSpeakTheme {
+                Surface(modifier = Modifier.fillMaxWidth()) {
+                    StatusIndicator(
+                        pipelineState = state,
+                        onRetry = { retried++ },
+                        onCancel = {},
+                        onDismissError = { dismissed++ }
+                    )
+                }
+            }
+        }
+        rule.waitForIdle()
+
+        rule.onNodeWithText(errorMessage).assertExists()
+        rule.onNodeWithText("Retry").assertExists()
+        rule.onNodeWithText("Cancel").assertExists()
+
+        rule.onRoot().captureRoboImage("build/ui-screenshots/statusIndicator_error.png")
+
+        rule.onNodeWithText("Retry").performClick()
+        rule.onNodeWithText("Cancel").performClick()
+        rule.waitForIdle()
+        assertEquals(1, retried)
+        assertEquals(1, dismissed)
+    }
+
+    @Test
+    fun statusIndicator_nonRetryableError_stillShowsCancel() {
+        var dismissed = 0
+        val state = SlothSpeakService.PipelineState.Error(
+            message = "On-device TTS has no voice data for the device language (status=-1)",
+            failedStep = SlothSpeakService.FailedStep.TTS,
+            questionText = "Hello",
+            answerText = "Hi there!",
+            isRetryable = false
+        )
+        rule.setContent {
+            SlothSpeakTheme {
+                Surface(modifier = Modifier.fillMaxWidth()) {
+                    StatusIndicator(
+                        pipelineState = state,
+                        onRetry = {},
+                        onCancel = {},
+                        onDismissError = { dismissed++ }
+                    )
+                }
+            }
+        }
+        rule.waitForIdle()
+
+        rule.onNodeWithText("Retry").assertDoesNotExist()
+        rule.onNodeWithText("Cancel").assertExists()
+        rule.onNodeWithText("Cancel").performClick()
+        rule.waitForIdle()
+        assertEquals(1, dismissed)
+    }
+
     private companion object {
         const val BODY_PREVIEW = """{"title": "Notes", "body": "Created from SlothSpeak"}"""
     }
