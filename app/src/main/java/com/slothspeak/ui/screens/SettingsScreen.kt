@@ -132,6 +132,7 @@ fun SettingsScreen(
                     viewModel.setLlmThinking(provider, enabled, level)
                 },
                 onSetXSearch = { viewModel.setXSearchEnabled(it) },
+                onFindSavedKey = { target -> viewModel.findSavedApiKey(target) },
                 onFetchModels = { baseUrl, providerId, apiKey ->
                     viewModel.fetchCompatModels(baseUrl, providerId, apiKey)
                 }
