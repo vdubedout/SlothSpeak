@@ -21,7 +21,7 @@ import org.robolectric.annotation.Config
 class LlmProviderCatalogTest {
 
     private class FakeStore : LlmProviderStore {
-        var selectedModelValue: String = ApiKeyManager.MODEL_PRO
+        var selectedModelValue: String = ApiKeyManager.MODEL_ASTRA
         var selectedCompatId: String? = null
         val builtinModels = mutableMapOf<String, String>()
         val builtinKeys = mutableSetOf<String>()
@@ -72,7 +72,7 @@ class LlmProviderCatalogTest {
         val openAi = providers[0]
         assertEquals("builtin:openai", openAi.key)
         assertEquals("OpenAI", openAi.displayName)
-        assertEquals(ApiKeyManager.MODEL_PRO, openAi.modelId)
+        assertEquals(ApiKeyManager.MODEL_ASTRA, openAi.modelId)
         assertTrue(openAi.active)
         assertEquals(ApiKeyManager.OPENAI_MODELS, openAi.availableModels)
         assertTrue(openAi.supportsThinking)
@@ -149,23 +149,23 @@ class LlmProviderCatalogTest {
     @Test
     fun selectModel_builtinUpdatesGlobalAndFamilyModelAndClearsCompat() {
         val store = storeWithOpenAiAndClaude().apply {
-            selectedModelValue = ApiKeyManager.MODEL_PRO
+            selectedModelValue = ApiKeyManager.MODEL_ASTRA
             compatConfigs += CompatibleProviderConfig.createDeepSeek("ds-1")
             selectedCompatId = "ds-1"
         }
         val catalog = LlmProviderCatalog(store)
 
         val openAi = catalog.getConfiguredProviders().first { it.type == LlmProviderType.OPENAI }
-        catalog.selectModel(openAi, ApiKeyManager.MODEL_STANDARD)
+        catalog.selectModel(openAi, ApiKeyManager.MODEL_SOL)
 
-        assertEquals(ApiKeyManager.MODEL_STANDARD, store.selectedModelValue)
-        assertEquals(ApiKeyManager.MODEL_STANDARD, store.builtinModels[ApiKeyManager.LLM_PROVIDER_OPENAI])
+        assertEquals(ApiKeyManager.MODEL_SOL, store.selectedModelValue)
+        assertEquals(ApiKeyManager.MODEL_SOL, store.builtinModels[ApiKeyManager.LLM_PROVIDER_OPENAI])
         assertNull(store.selectedCompatId)
 
         val refreshed = catalog.getConfiguredProviders()
         val openAiAfter = refreshed.first { it.type == LlmProviderType.OPENAI }
         assertTrue(openAiAfter.active)
-        assertEquals(ApiKeyManager.MODEL_STANDARD, openAiAfter.modelId)
+        assertEquals(ApiKeyManager.MODEL_SOL, openAiAfter.modelId)
         assertFalse(refreshed.first { it.isCompat }.active)
     }
 
@@ -197,7 +197,7 @@ class LlmProviderCatalogTest {
 
         assertEquals("ds-1", store.selectedCompatId)
         // Global model pref is untouched by compat selection
-        assertEquals(ApiKeyManager.MODEL_PRO, store.selectedModelValue)
+        assertEquals(ApiKeyManager.MODEL_ASTRA, store.selectedModelValue)
 
         val refreshed = catalog.getConfiguredProviders()
         assertTrue(refreshed.first { it.isCompat }.active)
@@ -218,16 +218,156 @@ class LlmProviderCatalogTest {
     }
 
     // ---------------------------------------------------------------
-    // Display formatting
+    // Model catalogue (issue #16)
     // ---------------------------------------------------------------
 
     @Test
+    fun modelLists_matchTheVerifiedLatestModels() {
+        assertEquals(
+            listOf("gpt-6.2-astra", "gpt-6.2-sol", "gpt-6.1-terra", "gpt-6-luna"),
+            ApiKeyManager.OPENAI_MODELS
+        )
+        assertEquals(
+            listOf(
+                "gemini-4-carbon",
+                "gemini-4-neon",
+                "gemini-4-hydrogen",
+                "gemini-4-argon",
+                "deep-research-max-preview-04-2026"
+            ),
+            ApiKeyManager.GEMINI_MODELS
+        )
+        assertEquals(
+            listOf("claude-opus-5-5", "claude-fable-5-2", "claude-sonnet-5-5", "claude-haiku-5-5"),
+            ApiKeyManager.CLAUDE_MODELS
+        )
+        assertEquals(listOf("grok-4.7"), ApiKeyManager.GROK_MODELS)
+
+        // OpenAI retired o3-deep-research, so it is not offered; Gemini Deep Research stays selectable.
+        assertFalse(ApiKeyManager.OPENAI_MODELS.contains(ApiKeyManager.MODEL_DEEP_RESEARCH))
+        assertTrue(ApiKeyManager.GEMINI_MODELS.contains(ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH))
+        assertEquals(4, ApiKeyManager.OPENAI_MODELS.size)
+    }
+
+    @Test
+    fun defaultBuiltinModel_isTheFirstModelOfEachFamily() {
+        assertEquals(ApiKeyManager.MODEL_ASTRA, ApiKeyManager.defaultBuiltinModel(ApiKeyManager.LLM_PROVIDER_OPENAI))
+        assertEquals(
+            ApiKeyManager.MODEL_GEMINI_CARBON,
+            ApiKeyManager.defaultBuiltinModel(ApiKeyManager.LLM_PROVIDER_GEMINI)
+        )
+        assertEquals(
+            ApiKeyManager.MODEL_CLAUDE_OPUS,
+            ApiKeyManager.defaultBuiltinModel(ApiKeyManager.LLM_PROVIDER_CLAUDE)
+        )
+        assertEquals(ApiKeyManager.MODEL_GROK, ApiKeyManager.defaultBuiltinModel(ApiKeyManager.LLM_PROVIDER_GROK))
+        assertEquals("gpt-6.2-astra", ApiKeyManager.defaultBuiltinModel(ApiKeyManager.LLM_PROVIDER_OPENAI))
+        assertEquals("gemini-4-carbon", ApiKeyManager.defaultBuiltinModel(ApiKeyManager.LLM_PROVIDER_GEMINI))
+        assertEquals("claude-opus-5-5", ApiKeyManager.defaultBuiltinModel(ApiKeyManager.LLM_PROVIDER_CLAUDE))
+        assertEquals("grok-4.7", ApiKeyManager.defaultBuiltinModel(ApiKeyManager.LLM_PROVIDER_GROK))
+    }
+
+    @Test
+    fun familyChecks_recogniseEveryNewModel() {
+        ApiKeyManager.OPENAI_MODELS.forEach { assertTrue(it, ApiKeyManager.isOpenAiModel(it)) }
+        ApiKeyManager.GEMINI_MODELS
+            .filter { it != ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH }
+            .forEach { assertTrue(it, ApiKeyManager.isGeminiModel(it)) }
+        ApiKeyManager.CLAUDE_MODELS.forEach { assertTrue(it, ApiKeyManager.isClaudeModel(it)) }
+        ApiKeyManager.GROK_MODELS.forEach { assertTrue(it, ApiKeyManager.isGrokModel(it)) }
+
+        assertFalse(ApiKeyManager.isOpenAiModel(ApiKeyManager.MODEL_DEEP_RESEARCH))
+        // The Gemini deep-research agent is not a chat model, but it is still selectable.
+        assertFalse(ApiKeyManager.isGeminiModel(ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH))
+        assertTrue(ApiKeyManager.GEMINI_MODELS.contains(ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH))
+        assertFalse(ApiKeyManager.isClaudeModel(ApiKeyManager.MODEL_GROK))
+        assertTrue(ApiKeyManager.isDeepResearchModel(ApiKeyManager.MODEL_DEEP_RESEARCH))
+        assertTrue(ApiKeyManager.isDeepResearchModel(ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH))
+    }
+
+    @Test
+    fun thinkingGating_enabledForEveryReasoningModelOnly() {
+        ApiKeyManager.OPENAI_MODELS.forEach { model ->
+            assertTrue("OpenAI $model should expose effort", ApiKeyManager.supportsOpenAiReasoningEffort(model))
+            assertFalse("Gemini $model should not expose Gemini thinking", ApiKeyManager.supportsGeminiThinking(model))
+        }
+        ApiKeyManager.GEMINI_MODELS
+            .filter { it != ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH }
+            .forEach { model ->
+                assertTrue("Gemini $model should expose thinking", ApiKeyManager.supportsGeminiThinking(model))
+                assertFalse("OpenAI $model should not expose effort", ApiKeyManager.supportsOpenAiReasoningEffort(model))
+            }
+        // Deep research agents keep their fixed effort, even when selectable.
+        assertFalse(ApiKeyManager.supportsOpenAiReasoningEffort(ApiKeyManager.MODEL_DEEP_RESEARCH))
+        assertFalse(ApiKeyManager.supportsGeminiThinking(ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH))
+    }
+
+    @Test
+    fun getConfiguredProviders_enablesThinkingForEveryOpenAiAndGeminiModel() {
+        val store = FakeStore().apply {
+            builtinKeys += ApiKeyManager.LLM_PROVIDER_OPENAI
+            builtinKeys += ApiKeyManager.LLM_PROVIDER_GEMINI
+        }
+        val catalog = LlmProviderCatalog(store)
+
+        for (model in ApiKeyManager.OPENAI_MODELS) {
+            store.selectedModelValue = model
+            val openAi = catalog.getConfiguredProviders().first { it.type == LlmProviderType.OPENAI }
+            assertEquals(model, openAi.modelId)
+            assertTrue("$model should support thinking", openAi.supportsThinking)
+            assertEquals(
+                listOf(ApiKeyManager.EFFORT_MEDIUM, ApiKeyManager.EFFORT_HIGH, ApiKeyManager.EFFORT_XHIGH),
+                openAi.thinkingLevels
+            )
+        }
+        for (model in ApiKeyManager.GEMINI_MODELS.filter { it != ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH }) {
+            store.selectedModelValue = model
+            val gemini = catalog.getConfiguredProviders().first { it.type == LlmProviderType.GEMINI }
+            assertEquals(model, gemini.modelId)
+            assertTrue("$model should support thinking", gemini.supportsThinking)
+            assertEquals(
+                listOf(ApiKeyManager.THINKING_LOW, ApiKeyManager.THINKING_MEDIUM, ApiKeyManager.THINKING_HIGH),
+                gemini.thinkingLevels
+            )
+        }
+    }
+
+    @Test
+    fun getConfiguredProviders_geminiDeepResearchIsSelectableWithoutThinkingLevels() {
+        val store = FakeStore().apply {
+            builtinKeys += ApiKeyManager.LLM_PROVIDER_GEMINI
+            selectedModelValue = ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH
+        }
+        val catalog = LlmProviderCatalog(store)
+
+        val gemini = catalog.getConfiguredProviders().single { it.type == LlmProviderType.GEMINI }
+        assertEquals(ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH, gemini.modelId)
+        assertTrue(gemini.active)
+        assertTrue(gemini.availableModels.contains(ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH))
+        assertFalse("deep research keeps its fixed effort", gemini.supportsThinking)
+        assertEquals(emptyList<String>(), gemini.thinkingLevels)
+    }
+
+    @Test
     fun friendlyModelName_mapsKnownModels() {
-        assertEquals("GPT-5.5", LlmProviderCatalog.friendlyModelName(ApiKeyManager.MODEL_STANDARD))
-        assertEquals("GPT-5.5 Pro", LlmProviderCatalog.friendlyModelName(ApiKeyManager.MODEL_PRO))
-        assertEquals("Claude Opus 4.8", LlmProviderCatalog.friendlyModelName(ApiKeyManager.MODEL_CLAUDE_OPUS))
-        assertEquals("Gemini 3.1 Pro", LlmProviderCatalog.friendlyModelName(ApiKeyManager.MODEL_GEMINI_PRO))
-        assertEquals("Grok 4.3", LlmProviderCatalog.friendlyModelName(ApiKeyManager.MODEL_GROK))
+        assertEquals("GPT-6.2 Astra", LlmProviderCatalog.friendlyModelName(ApiKeyManager.MODEL_ASTRA))
+        assertEquals("GPT-6.2 Sol", LlmProviderCatalog.friendlyModelName(ApiKeyManager.MODEL_SOL))
+        assertEquals("GPT-6.1 Terra", LlmProviderCatalog.friendlyModelName(ApiKeyManager.MODEL_TERRA))
+        assertEquals("GPT-6 Luna", LlmProviderCatalog.friendlyModelName(ApiKeyManager.MODEL_LUNA))
+        assertEquals("Gemini 4 Carbon", LlmProviderCatalog.friendlyModelName(ApiKeyManager.MODEL_GEMINI_CARBON))
+        assertEquals("Gemini 4 Neon", LlmProviderCatalog.friendlyModelName(ApiKeyManager.MODEL_GEMINI_NEON))
+        assertEquals("Gemini 4 Hydrogen", LlmProviderCatalog.friendlyModelName(ApiKeyManager.MODEL_GEMINI_HYDROGEN))
+        assertEquals("Gemini 4 Argon", LlmProviderCatalog.friendlyModelName(ApiKeyManager.MODEL_GEMINI_ARGON))
+        assertEquals("Claude Fable 5.2", LlmProviderCatalog.friendlyModelName(ApiKeyManager.MODEL_CLAUDE_FABLE))
+        assertEquals("Claude Opus 5.5", LlmProviderCatalog.friendlyModelName(ApiKeyManager.MODEL_CLAUDE_OPUS))
+        assertEquals("Claude Sonnet 5.5", LlmProviderCatalog.friendlyModelName(ApiKeyManager.MODEL_CLAUDE_SONNET))
+        assertEquals("Claude Haiku 5.5", LlmProviderCatalog.friendlyModelName(ApiKeyManager.MODEL_CLAUDE_HAIKU))
+        assertEquals("Grok 4.7", LlmProviderCatalog.friendlyModelName(ApiKeyManager.MODEL_GROK))
+        assertEquals("o3 Deep Research", LlmProviderCatalog.friendlyModelName(ApiKeyManager.MODEL_DEEP_RESEARCH))
+        assertEquals(
+            "Gemini Deep Research",
+            LlmProviderCatalog.friendlyModelName(ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH)
+        )
     }
 
     @Test

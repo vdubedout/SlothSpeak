@@ -145,6 +145,7 @@ fun SettingsScreen(
                 onToggleBraveSearch = { viewModel.setBraveSearchEnabled(it) },
                 onSaveBraveApiKey = { viewModel.saveBraveApiKey(it) },
                 onDeleteBraveApiKey = { viewModel.deleteBraveApiKey() },
+                onSetBraveMinIntervalMs = { viewModel.setBraveMinIntervalMs(it) },
                 onToggleHttpRequest = { viewModel.setHttpRequestEnabled(it) },
                 onSetHttpWritePolicy = { viewModel.setHttpWritePolicy(it) },
                 onRemoveAllowedWriteHost = { viewModel.removeAllowedWriteHost(it) },

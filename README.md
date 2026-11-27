@@ -31,7 +31,7 @@ There is no server backend. The app calls AI provider APIs directly from the dev
 
 **Cloud STT** — OpenAI (`gpt-4o-transcribe`), Together (`openai/whisper-large-v3`), or any custom OpenAI-compatible transcription endpoint. Reuses the OpenAI key or a dedicated STT key.
 
-**Four built-in LLM providers plus OpenAI-compatible ones** — OpenAI (GPT-5.5 / GPT-5.5 Pro / o3 Deep Research), Gemini (3.1 Pro / 3.5 Pro / Deep Research), Claude (Opus 4.8), Grok (4.3), and any OpenAI Chat Completions-compatible endpoint: Z.ai GLM 5.3, DeepSeek V4 Flash, or a custom/self-hosted API (Qwen via vLLM/Ollama/LM Studio, …). GPT-5.5 Pro, Gemini, and Claude expose configurable reasoning effort / thinking level. See [Supported Models](#supported-models).
+**Four built-in LLM providers plus OpenAI-compatible ones** — OpenAI (GPT-6.2 Astra / Sol, GPT-6.1 Terra, GPT-6 Luna), Gemini (4 Carbon / Neon / Hydrogen / Argon + Deep Research Max), Claude (Opus 5.5 / Fable 5.2 / Sonnet 5.5 / Haiku 5.5), Grok (4.7), and any OpenAI Chat Completions-compatible endpoint: Z.ai GLM 5.3, DeepSeek V4 Flash, or a custom/self-hosted API (Qwen via vLLM/Ollama/LM Studio, …). GPT-6.x, Gemini 4, and Claude expose configurable reasoning effort / thinking level. See [Supported Models](#supported-models).
 
 **Tool use (agent harness)** — For OpenAI-compatible providers, the model can use tools in a ReAct loop: **Brave Web Search** (read-only web search) and **HTTP Request** (curl-like GET/POST/PUT/PATCH/DELETE/HEAD). Mutating HTTP requests require explicit user approval — Allow once, Always allow host, Always allow all, or Deny — with secrets redacted in the confirmation preview. Every tool call is recorded as a trace (name, arguments, result preview, duration, OK/error) that is persisted with the answer and shown as a collapsible "Tools used (N)" section. See [Tool Harness Architecture](#tool-harness-architecture).
 
@@ -65,17 +65,22 @@ There is no server backend. The app calls AI provider APIs directly from the dev
 
 | Provider | Model | ID | Notes |
 |----------|-------|----|-------|
-| OpenAI | GPT-5.5 Pro | `gpt-5.5-pro` | Configurable reasoning effort (medium/high/xhigh) |
-| OpenAI | GPT-5.5 | `gpt-5.5` | Faster, no extended thinking |
-| OpenAI | o3 Deep Research | `o3-deep-research` | Async polling, extended web research |
-| Google | Gemini 3.1 Pro | `gemini-3.1-pro-preview` | Configurable thinking level (low/medium/high) |
-| Google | Gemini 3.5 Pro | `gemini-3.5-pro-preview` | Configurable thinking level (low/medium/high) |
-| Google | Gemini Deep Research | `deep-research-max-preview-04-2026` | Async polling with Google Search |
-| Anthropic | Claude Opus 4.8 | `claude-opus-4-8` | Adaptive thinking, effort (low/medium/high/max) |
-| xAI | Grok 4.3 | `grok-4.3` | Optional X (Twitter) search |
-| Z.ai (compatible) | GLM 5.3 | `glm-5.3` | Chat Completions, thinking on by default |
-| DeepSeek (compatible) | DeepSeek V4 Flash | `deepseek-v4-flash` | Chat Completions, thinking on, max_tokens 8192 |
-| Custom (compatible) | any | user-defined | Chat Completions, e.g. Qwen via vLLM/Ollama/LM Studio |
+| OpenAI | GPT-6.2 Astra | `gpt-6.2-astra` | Default; configurable reasoning effort (medium/high/xhigh) |
+| OpenAI | GPT-6.2 Sol | `gpt-6.2-sol` | Configurable reasoning effort (medium/high/xhigh) |
+| OpenAI | GPT-6.1 Terra | `gpt-6.1-terra` | Configurable reasoning effort (medium/high/xhigh) |
+| OpenAI | GPT-6 Luna | `gpt-6-luna` | Configurable reasoning effort (medium/high/xhigh) |
+| Google | Gemini 4 Carbon | `gemini-4-carbon` | Default; configurable thinking level (low/medium/high) |
+| Google | Gemini 4 Neon | `gemini-4-neon` | Configurable thinking level (low/medium/high) |
+| Google | Gemini 4 Hydrogen | `gemini-4-hydrogen` | Configurable thinking level (low/medium/high) |
+| Google | Gemini 4 Argon | `gemini-4-argon` | Configurable thinking level (low/medium/high) |
+| Google | Gemini Deep Research Max | `deep-research-max-preview-04-2026` | Async polling with Google Search; no thinking levels |
+| Anthropic | Claude Opus 5.5 | `claude-opus-5-5` | Default; adaptive thinking, effort (low/medium/high/max) |
+| Anthropic | Claude Fable 5.2 | `claude-fable-5-2` | Adaptive thinking, effort (low/medium/high/max) |
+| Anthropic | Claude Sonnet 5.5 | `claude-sonnet-5-5` | Adaptive thinking, effort (low/medium/high/max) |
+| Anthropic | Claude Haiku 5.5 | `claude-haiku-5-5` | Adaptive thinking, effort (low/medium/high/max) |
+| xAI | Grok 4.7 | `grok-4.7` | Optional X (Twitter) search |
+
+OpenAI Deep Research (`o3-deep-research`) is temporarily unavailable because OpenAI retired the model in July 2026. Gemini Deep Research (`deep-research-max-preview-04-2026`) remains available. Migration to GPT-6 Astra + web search is tracked in issue #19.
 
 Each built-in provider requires its own API key, configured in Settings. Compatible providers are configured in the same dialog (base URL, model ID, optional key). Speech-to-Text can use OpenAI, Together, a custom endpoint, or the on-device FUTO provider (no key). Text-to-Speech can use OpenAI, Together, a custom endpoint, or the Android system engine. Details on compatible providers: [docs/compat-providers.md](docs/compat-providers.md).
 
@@ -279,6 +284,7 @@ There is also one connected-device instrumentation test (`app/src/androidTest/�
 - No progressive playback (all TTS chunks must finish before audio starts).
 - On-device STT requires a ~650 MB model (downloaded or imported); wake word supports only the bundled "Hey Jarvis" phrase.
 - Interactive voice mode is unavailable for Deep Research models, and follow-up listening is cancelled when the app goes to the background.
+- OpenAI Deep Research is temporarily unavailable because `o3-deep-research` was retired by OpenAI in July 2026; Gemini Deep Research (`deep-research-max-preview-04-2026`) remains available; migration to GPT-6 Astra + web search is tracked in issue #19.
 
 ## Contributing
 

@@ -8,6 +8,9 @@ import com.slothspeak.tools.ToolPlugin
 import com.slothspeak.tools.ToolResult
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -32,12 +35,27 @@ import java.util.concurrent.TimeUnit
  *
  * Secrets: the API key lives in [ToolConfigManager]'s EncryptedSharedPreferences and is
  * only ever attached to the outgoing request as the `X-Subscription-Token` header.
+ *
+ * Rate limiting: Brave's free plan allows about one request per second and answers
+ * HTTP 429 when several searches are fired at once. Every HTTP call therefore goes
+ * through [awaitRateLimitSlot], which spaces consecutive request starts by
+ * [ToolConfigManager.getBraveMinIntervalMs] (default 1 s, configurable in Settings → Tools).
+ * The clock and sleep function are injectable so tests can assert the spacing without
+ * actually sleeping.
  */
 class BraveSearchPlugin(
     private val toolConfigManager: ToolConfigManager,
     private val httpClient: OkHttpClient = defaultHttpClient(),
-    private val baseUrl: String = DEFAULT_BASE_URL
+    private val baseUrl: String = DEFAULT_BASE_URL,
+    private val nowMs: () -> Long = { System.currentTimeMillis() },
+    private val sleepMs: suspend (Long) -> Unit = { delay(it) }
 ) : ToolPlugin {
+
+    /** Serialises the rate-limiter bookkeeping across simultaneous tool calls. */
+    private val rateLimitMutex = Mutex()
+
+    /** Start timestamp of the last HTTP call, or null when none has been sent yet. */
+    private var lastRequestAtMs: Long? = null
 
     /** Parsed once so a malformed [baseUrl] fails fast at construction, not per call. */
     private val baseHttpUrl: HttpUrl = baseUrl.toHttpUrl()
@@ -92,6 +110,7 @@ class BraveSearchPlugin(
         val request = buildRequest(query, count, freshness, apiKey)
 
         return try {
+            awaitRateLimitSlot()
             withContext(Dispatchers.IO) {
                 httpClient.newCall(request).execute().use { response ->
                     handleResponse(call, query, response)
@@ -101,6 +120,24 @@ class BraveSearchPlugin(
             throw e
         } catch (e: IOException) {
             errorResult(call, "Brave Search network error: ${e.message ?: e.javaClass.simpleName}")
+        }
+    }
+
+    /**
+     * Waits until at least [ToolConfigManager.getBraveMinIntervalMs] has elapsed since the
+     * previous request started, then claims the current slot. The mutex makes the
+     * read-sleep-write sequence atomic, so simultaneous calls queue up instead of
+     * hitting Brave in the same instant. A configured interval of 0 disables the delay.
+     */
+    private suspend fun awaitRateLimitSlot() {
+        val intervalMs = toolConfigManager.getBraveMinIntervalMs().toLong()
+        rateLimitMutex.withLock {
+            val previous = lastRequestAtMs
+            if (previous != null && intervalMs > 0) {
+                val remainingMs = intervalMs - (nowMs() - previous)
+                if (remainingMs > 0) sleepMs(remainingMs)
+            }
+            lastRequestAtMs = nowMs()
         }
     }
 
