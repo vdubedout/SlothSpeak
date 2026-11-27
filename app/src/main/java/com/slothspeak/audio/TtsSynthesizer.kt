@@ -7,6 +7,7 @@ import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import com.slothspeak.api.ApiException
 import com.slothspeak.data.ApiKeyManager
+import com.slothspeak.util.TextChunker
 import com.squareup.moshi.Json
 import com.squareup.moshi.JsonClass
 import com.squareup.moshi.Moshi
@@ -29,6 +30,12 @@ import java.util.concurrent.TimeUnit
  * Interface for TTS synthesis — one method: synthesize text to an audio file.
  */
 interface TtsSynthesizer {
+    /**
+     * Maximum number of characters allowed in a single [synthesize] call.
+     */
+    val maxChunkChars: Int
+        get() = TextChunker.DEFAULT_MAX_CHUNK_SIZE
+
     /**
      * Synthesize [text] into [outputFile].
      * @param instructions optional speaking-style instructions (OpenAI only)
@@ -151,13 +158,19 @@ class OpenAiCompatibleTtsSynthesizer(
  *
  * Lazy-init on first synthesize. A single engine instance is reused.
  */
-class OnDeviceTtsSynthesizer(
-    private val context: Context
+class OnDeviceTtsSynthesizer internal constructor(
+    private val context: Context,
+    private val maxSpeechInputLengthProvider: () -> Int
 ) : TtsSynthesizer {
+
+    constructor(context: Context) : this(context, { TextToSpeech.getMaxSpeechInputLength() })
 
     private val TAG = "OnDeviceTts"
     private val INIT_TIMEOUT_MS = 30_000L
     private val SYNTHESIS_TIMEOUT_MS = 60_000L
+
+    override val maxChunkChars: Int
+        get() = computeMaxChunkChars(maxSpeechInputLengthProvider())
 
     private var tts: TextToSpeech? = null
     private val ready = CompletableDeferred<Boolean>()
@@ -187,17 +200,24 @@ class OnDeviceTtsSynthesizer(
                 override fun onDone(utteranceId: String?) {
                     Log.i(TAG, "Synthesis complete: $utteranceId")
                     val id = utteranceId ?: return
-                    pending.get(id)?.complete(Unit)
-                    pending.remove(id)
+                    pending.remove(id)?.complete(Unit)
                 }
 
+                @Deprecated("Deprecated in API 21")
                 override fun onError(utteranceId: String?) {
                     val id = utteranceId ?: return
                     Log.e(TAG, "Synthesis error: $utteranceId")
-                    pending.get(id)?.completeExceptionally(
+                    pending.remove(id)?.completeExceptionally(
                         ApiException("On-device TTS synthesis failed", 0, false)
                     )
-                    pending.remove(id)
+                }
+
+                override fun onError(utteranceId: String?, errorCode: Int) {
+                    val id = utteranceId ?: return
+                    Log.e(TAG, "Synthesis error: $utteranceId (errorCode=$errorCode)")
+                    pending.remove(id)?.completeExceptionally(
+                        ApiException("On-device TTS synthesis failed (errorCode=$errorCode)", 0, false)
+                    )
                 }
             })
         }
@@ -236,7 +256,10 @@ class OnDeviceTtsSynthesizer(
         val result = engine.synthesizeToFile(text, params, outputFile, utteranceId)
         if (result != TextToSpeech.SUCCESS) {
             pending.remove(utteranceId)
-            throw ApiException("On-device TTS request rejected (code=$result)", 0, false)
+            val engineLimit = maxSpeechInputLengthProvider()
+            val msg = "On-device TTS request rejected (code=$result, chars=${text.length}, engineLimit=$engineLimit)"
+            Log.e(TAG, msg)
+            throw ApiException(msg, 0, false)
         }
 
         try {
@@ -264,6 +287,19 @@ class OnDeviceTtsSynthesizer(
             }
         }
         pending.clear()
+    }
+
+    companion object {
+        private const val SAFE_MAX_CHUNK_CHARS = 3000
+
+        /**
+         * Derives a safe per-utterance character limit from Android's
+         * [TextToSpeech.getMaxSpeechInputLength]. Leaves headroom below the engine
+         * limit and clamps to at least 1 so chunking always makes forward progress.
+         */
+        internal fun computeMaxChunkChars(engineLimit: Int): Int {
+            return minOf(engineLimit - 1, SAFE_MAX_CHUNK_CHARS).coerceAtLeast(1)
+        }
     }
 }
 

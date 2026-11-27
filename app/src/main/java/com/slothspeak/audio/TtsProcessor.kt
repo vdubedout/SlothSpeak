@@ -2,6 +2,7 @@ package com.slothspeak.audio
 
 import android.util.Log
 import com.slothspeak.util.TextChunker
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -31,11 +32,11 @@ class TtsProcessor(
     )
 
     suspend fun processText(text: String): List<File> = coroutineScope {
-        val chunks = TextChunker.chunkText(text)
+        val chunks = TextChunker.chunkText(text, synthesizer.maxChunkChars)
         val totalChunks = chunks.size
         val totalChars = text.length
 
-        Log.i(TAG, "TTS: $totalChunks chunks from $totalChars chars")
+        Log.i(TAG, "TTS: $totalChunks chunks from $totalChars chars (maxChunkChars=${synthesizer.maxChunkChars})")
         _progress.value = TtsProgress(
             totalChunks = totalChunks,
             statusMessage = "Splitting text: $totalChunks chunks ($totalChars chars)"
@@ -135,6 +136,8 @@ class TtsProcessor(
                 Log.i(TAG, "TTS $chunkLabel done: ${fileSize}KB (depth=$depth)")
 
                 return listOf(outputFile)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 lastException = e
                 Log.e(TAG, "TTS $chunkLabel attempt $attempt failed: ${e.message}")
