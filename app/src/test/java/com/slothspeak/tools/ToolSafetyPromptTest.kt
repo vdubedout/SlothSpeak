@@ -32,6 +32,35 @@ class ToolSafetyPromptTest {
         assertEquals(BASE, composeToolSystemPrompt(BASE, "   \n ", toolsActive = true))
     }
 
+    // --- Replayed tool history (QA §warning 2): the guard stays on even with tools off ---
+
+    @Test
+    fun compose_toolsInactiveButHistoryHasToolData_appendsSafetyPrompt() {
+        assertEquals(
+            "$BASE\n\n$SAFETY",
+            composeToolSystemPrompt(BASE, SAFETY, toolsActive = false, historyHasToolData = true)
+        )
+    }
+
+    @Test
+    fun compose_toolsActiveAndHistoryHasToolData_appendsSafetyPromptOnce() {
+        assertEquals(
+            "$BASE\n\n$SAFETY",
+            composeToolSystemPrompt(BASE, SAFETY, toolsActive = true, historyHasToolData = true)
+        )
+    }
+
+    @Test
+    fun compose_noToolsAndNoToolHistory_returnsBasePromptUntouched() {
+        assertEquals(BASE, composeToolSystemPrompt(BASE, SAFETY, toolsActive = false, historyHasToolData = false))
+        assertEquals(BASE, composeToolSystemPrompt(BASE, SAFETY, toolsActive = false))
+    }
+
+    @Test
+    fun compose_historyHasToolDataWithBlankSafety_returnsBasePromptUntouched() {
+        assertEquals(BASE, composeToolSystemPrompt(BASE, "  ", toolsActive = false, historyHasToolData = true))
+    }
+
     @Test
     fun compose_trimsSurroundingWhitespaceOfBothParts() {
         assertEquals("$BASE\n\n$SAFETY", composeToolSystemPrompt("  $BASE \n", " $SAFETY\n\n", toolsActive = true))

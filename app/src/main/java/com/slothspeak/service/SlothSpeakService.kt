@@ -51,8 +51,9 @@ import com.slothspeak.tools.ToolConfirmationHandler
 import com.slothspeak.tools.ToolConfirmationRequest
 import com.slothspeak.tools.ToolRegistry
 import com.slothspeak.tools.ToolTraceEntry
-import com.slothspeak.tools.answerWithToolTraceDigest
+import com.slothspeak.tools.compatHistoryFrom
 import com.slothspeak.tools.composeToolSystemPrompt
+import com.slothspeak.tools.containsToolTraceDigest
 import com.slothspeak.tools.formatToolSummary
 import com.slothspeak.tools.plugins.BraveSearchPlugin
 import com.slothspeak.tools.plugins.HttpRequestPlugin
@@ -430,14 +431,13 @@ class SlothSpeakService : Service() {
     /**
      * Conversation history for the compat LLM step, oldest first. Each previous answer that
      * used tools carries a digest of those calls (issue #14) so the model does not relaunch
-     * identical calls in a follow-up. Empty when the conversation is new.
+     * identical calls in a follow-up. The placeholder row of the question currently being
+     * answered has no answer yet and is skipped. Empty when the conversation is new.
      */
     private suspend fun loadCompatHistory(conversationId: Long?): List<Pair<String, String>> {
         if (conversationId == null) return emptyList()
         return withContext(Dispatchers.IO) {
-            database.conversationDao()
-                .getQAPairsForConversationOnce(conversationId)
-                .map { it.questionText to answerWithToolTraceDigest(it.answerText, it.toolCallsJson) }
+            compatHistoryFrom(database.conversationDao().getQAPairsForConversationOnce(conversationId))
         }
     }
 
@@ -462,11 +462,13 @@ class SlothSpeakService : Service() {
     ): CompatLlmOutcome {
         lastToolCallsJson = null
         val activeTools = toolRegistry.activeTools()
-        // The safety preamble only joins the prompt while tools can actually run (issue #15).
+        // The safety preamble joins the prompt whenever tool data is or may be in play:
+        // tools offered now, or untrusted tool results replayed from the history (issue #15).
         val systemPrompt = composeToolSystemPrompt(
             basePrompt = apiKeyManager.getSystemPrompt(),
             toolSafetyPrompt = toolConfigManager.getToolSafetyPrompt(),
-            toolsActive = activeTools.isNotEmpty()
+            toolsActive = activeTools.isNotEmpty(),
+            historyHasToolData = history.containsToolTraceDigest()
         )
         if (activeTools.isEmpty()) {
             val result = openAiCompatibleClient.createResponse(
