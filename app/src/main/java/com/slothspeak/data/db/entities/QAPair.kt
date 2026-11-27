@@ -30,5 +30,7 @@ data class QAPair(
     val llmResponseSeconds: Int? = null,
     val answerTextRich: String? = null,
     val reasoningText: String? = null,
+    /** Serialised [com.slothspeak.tools.ToolTraceEntry] list of the tools used for this answer. */
+    val toolCallsJson: String? = null,
     val createdAt: Long = System.currentTimeMillis()
 )
