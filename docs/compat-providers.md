@@ -85,23 +85,16 @@ History messages **never** carry `reasoning_content`. The `thinking` and `reason
 
 ---
 
-## Future: MCP Web Search
+## Tool use (implemented)
 
-Planned feature: route web search questions through the user's MCP web-search server before falling back to the LLM.
+Instead of pre-fetched MCP search context, compatible providers now use a ReAct agent
+loop with first-class tools. When at least one tool plugin is enabled **and** configured in
+Settings → Tools, the request goes through `AgentHarness`: the model may call
+`brave_web_search` (Brave Search API) or `http_request` (curl-like HTTP), results are fed
+back, and the loop repeats until the model answers in text. Mutating HTTP requests
+(POST/PUT/PATCH/DELETE) require user approval in a confirmation dialog. See the
+"Tool Harness Architecture" section of the main [README](../README.md) for details.
 
-### Design sketch
-
-1. In Settings, a per-provider "Enable MCP web search" toggle (default off for compat providers, since they lack hosted search tools).
-2. When enabled, before sending the request to the LLM, the system calls the user's MCP server (via `mcp__brave_search` or similar) with the user's question.
-3. Search results are packed as a system message prefix (or appended to the user message) so the LLM can answer with current information.
-4. No code changes to the LLM client — the search augmentation happens in the pipeline layer (SlothSpeakService).
-
-### Why MCP instead of hosted search
-
-- Compat providers (Z.ai, DeepSeek, self-hosted Qwen) do not offer hosted web search tools.
-- MCP gives the user full control over which search provider they use (Brave, SerpAPI, etc.).
-- The search results are injected as context, which works with any LLM without requiring tool-calling support.
-
-### Not implemented
-
-This section describes the plan only. No code has been written for MCP web search integration.
+Tool-calling support depends on the server exposing the OpenAI `tools` / `tool_calls`
+Chat Completions fields; self-hosted models without tool-calling support should keep the
+tools disabled in Settings.
