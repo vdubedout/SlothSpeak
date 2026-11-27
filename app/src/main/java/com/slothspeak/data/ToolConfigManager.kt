@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import com.slothspeak.harness.AgentHarness
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -254,8 +255,8 @@ class ToolConfigManager internal constructor(
         const val PLUGIN_BRAVE_SEARCH = "brave_search"
         const val PLUGIN_HTTP_REQUEST = "http_request"
 
-        /** Default tool-call budget per prompt for the agent harness (issue #13). */
-        const val DEFAULT_MAX_TOOL_CALLS = 15
+        /** Default tool-call budget per prompt; [AgentHarness] owns the value so the two cannot drift. */
+        const val DEFAULT_MAX_TOOL_CALLS = AgentHarness.DEFAULT_MAX_TOOL_CALLS
         /** Inclusive bounds of the configurable tool-call budget. */
         const val MIN_TOOL_CALLS = 1
         const val MAX_TOOL_CALLS_LIMIT = 50

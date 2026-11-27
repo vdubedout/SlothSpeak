@@ -170,7 +170,7 @@ class AgentHarness(
         const val RESULT_PREVIEW_CHARS = 500
         private const val NANOS_PER_MILLIS = 1_000_000L
         const val STEP_LIMIT_FALLBACK =
-            "I ran out of tool-use steps before I could finish answering. Please try again."
+            "I ran out of tool calls before I could finish answering. Please try again."
 
         /**
          * Sent as a user turn after the last allowed tool call so the model concludes with

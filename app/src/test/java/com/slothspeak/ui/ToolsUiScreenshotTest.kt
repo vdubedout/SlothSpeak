@@ -195,8 +195,8 @@ class ToolsUiScreenshotTest {
         // Tool usage: per-prompt tool-call budget, digits only
         rule.onNodeWithText("Tool usage").assertExists()
         rule.onNodeWithText("Max tool calls per prompt").assertExists()
-        rule.onNodeWithText("15").assertExists()
-        rule.onNodeWithText("Default 15 · 1–50").assertExists()
+        rule.onNodeWithText(ToolConfigManager.DEFAULT_MAX_TOOL_CALLS.toString()).assertExists()
+        rule.onNodeWithText("Default ${ToolConfigManager.DEFAULT_MAX_TOOL_CALLS} · 1–50").assertExists()
 
         // Tool safety: the default preamble is prefilled, so no reset button
         rule.onNodeWithText("Tool safety").assertExists()
@@ -216,7 +216,7 @@ class ToolsUiScreenshotTest {
         rule.onNodeWithContentDescription("Delete Brave API key").assertDoesNotExist()
         rule.onNodeWithText("Always-allowed hosts").assertDoesNotExist()
         rule.onNodeWithText("Add auth profile").assertExists()
-        rule.onNodeWithText("15").assertExists()
+        rule.onNodeWithText(ToolConfigManager.DEFAULT_MAX_TOOL_CALLS.toString()).assertExists()
         rule.onNodeWithText(ToolConfigManager.DEFAULT_TOOL_SAFETY_PROMPT).assertExists()
 
         rule.onRoot().captureRoboImage("build/ui-screenshots/toolsSettings_defaults.png")

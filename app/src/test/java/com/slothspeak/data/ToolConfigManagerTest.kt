@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.slothspeak.harness.AgentHarness
 import org.json.JSONArray
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -187,10 +188,11 @@ class ToolConfigManagerTest {
     // --- Max tool calls per prompt (issue #13) ---
 
     @Test
-    fun maxToolCalls_defaultsTo15() {
-        assertEquals(15, manager.getMaxToolCalls())
-        assertEquals(15, ToolConfigManager.DEFAULT_MAX_TOOL_CALLS)
-        assertEquals(15, manager.snapshot().maxToolCalls)
+    fun maxToolCalls_defaultsToTheHarnessDefault() {
+        // Single source of truth lives in AgentHarness (the literal is asserted there).
+        assertEquals(AgentHarness.DEFAULT_MAX_TOOL_CALLS, manager.getMaxToolCalls())
+        assertEquals(AgentHarness.DEFAULT_MAX_TOOL_CALLS, ToolConfigManager.DEFAULT_MAX_TOOL_CALLS)
+        assertEquals(AgentHarness.DEFAULT_MAX_TOOL_CALLS, manager.snapshot().maxToolCalls)
     }
 
     @Test
