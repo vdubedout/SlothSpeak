@@ -306,7 +306,7 @@ class HomeComposerScreenshotTest {
                                     timestamp = 1700000000000L,
                                     audioFiles = null,
                                     onReplayClick = null,
-                                    model = "gpt-5.5-pro",
+                                    model = "gpt-6.2-astra",
                                     llmResponseSeconds = 4
                                 )
                             }
@@ -352,7 +352,7 @@ class HomeComposerScreenshotTest {
         val rootBounds = rule.onRoot().getUnclippedBoundsInRoot()
         val topBarClosed = rule.onNodeWithText("SlothSpeak").getUnclippedBoundsInRoot()
         val inputClosed = rule.onNodeWithText("Ask anything…").getUnclippedBoundsInRoot()
-        val modelPillClosed = rule.onNodeWithText("GPT-5.5 Pro").getUnclippedBoundsInRoot()
+        val modelPillClosed = rule.onNodeWithText("GPT-6.2 Astra").getUnclippedBoundsInRoot()
 
         // 2. Keyboard open: 300dp IME inset alongside the same 48dp navigation bar inset
         val openInsets = WindowInsetsCompat.Builder()
@@ -367,7 +367,7 @@ class HomeComposerScreenshotTest {
 
         val topBarOpen = rule.onNodeWithText("SlothSpeak").getUnclippedBoundsInRoot()
         val inputOpen = rule.onNodeWithText("Ask anything…").getUnclippedBoundsInRoot()
-        val modelPillOpen = rule.onNodeWithText("GPT-5.5 Pro").getUnclippedBoundsInRoot()
+        val modelPillOpen = rule.onNodeWithText("GPT-6.2 Astra").getUnclippedBoundsInRoot()
         val latestQuestion = rule.onNodeWithText("And what about Japan?").getUnclippedBoundsInRoot()
 
         val imeTopDp = rootBounds.bottom - imeDp
@@ -400,7 +400,7 @@ class HomeComposerScreenshotTest {
         )
 
         // Model chip stays tappable with keyboard open
-        rule.onNodeWithText("GPT-5.5 Pro").performClick()
+        rule.onNodeWithText("GPT-6.2 Astra").performClick()
         rule.waitForIdle()
         assertEquals(1, modelPillClicks)
 
