@@ -153,11 +153,14 @@ class ToolConfigManager internal constructor(
 
     // --- Tool safety prompt (prompt-injection guard, issue #15) ---
 
-    /** Configured safety preamble, or [DEFAULT_TOOL_SAFETY_PROMPT] when unset/blank. */
+    /** Configured safety preamble, or [DEFAULT_TOOL_SAFETY_PROMPT] when unset/blank/unreadable. */
     fun getToolSafetyPrompt(): String {
-        return configPrefs.getString(KEY_TOOL_SAFETY_PROMPT, null)
-            ?.takeIf { it.isNotBlank() }
-            ?: DEFAULT_TOOL_SAFETY_PROMPT
+        val stored = try {
+            configPrefs.getString(KEY_TOOL_SAFETY_PROMPT, null)
+        } catch (_: ClassCastException) {
+            null
+        }
+        return stored?.takeIf { it.isNotBlank() } ?: DEFAULT_TOOL_SAFETY_PROMPT
     }
 
     /** Stores [prompt] trimmed; a blank prompt is treated as a reset so the guard never disappears. */

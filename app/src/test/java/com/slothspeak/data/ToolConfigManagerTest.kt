@@ -254,6 +254,13 @@ class ToolConfigManagerTest {
         assertEquals(ToolConfigManager.DEFAULT_TOOL_SAFETY_PROMPT, manager.getToolSafetyPrompt())
     }
 
+    @Test
+    fun toolSafetyPrompt_wrongStoredTypeFallsBackToDefault() {
+        configPrefs.edit().putInt("tool_safety_prompt", 42).commit()
+
+        assertEquals(ToolConfigManager.DEFAULT_TOOL_SAFETY_PROMPT, manager.getToolSafetyPrompt())
+    }
+
     // --- Allowed write hosts ---
 
     @Test

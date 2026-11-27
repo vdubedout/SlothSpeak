@@ -9,7 +9,9 @@ import com.slothspeak.tools.ToolRegistry
 import com.slothspeak.tools.ToolResult
 import com.slothspeak.tools.ToolTraceEntry
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -660,5 +662,44 @@ class AgentHarnessTest {
         } catch (e: CancellationException) {
             assertNotNull(e)
         }
+    }
+
+    @Test
+    fun run_cancellationBetweenToolCalls_skipsRemainingCallsAndPropagates() = runBlocking {
+        val plugin = defaultPlugin()
+        val adapter = ScriptedAdapter { index, _ ->
+            if (index == 0) toolStep(call("web_search", "c1"), call("lookup", "c2")) else textStep("done")
+        }
+        val harness = AgentHarness(adapter, ToolRegistry(listOf(plugin)))
+        // Standalone parent so the cancellation does not reach this runBlocking scope.
+        val parent = Job()
+        val child = launch(parent) {
+            harness.run(QUESTION, emptyList(), SYSTEM_PROMPT, onToolCallFinish = { parent.cancel() })
+        }
+
+        child.join()
+
+        assertTrue(child.isCancelled)
+        assertEquals(listOf("c1"), plugin.executed.map { it.id })
+        assertEquals("no further LLM step after cancellation", 1, adapter.recorded.size)
+    }
+
+    @Test
+    fun run_cancellationAfterLastBudgetedCall_skipsFinalSynthesis() = runBlocking {
+        val plugin = defaultPlugin()
+        val adapter = ScriptedAdapter { _, tools ->
+            if (tools.isNotEmpty()) toolStep(call("web_search", "only")) else textStep("done")
+        }
+        val harness = AgentHarness(adapter, ToolRegistry(listOf(plugin)), maxToolCalls = 1)
+        val parent = Job()
+        val child = launch(parent) {
+            harness.run(QUESTION, emptyList(), SYSTEM_PROMPT, onToolCallFinish = { parent.cancel() })
+        }
+
+        child.join()
+
+        assertTrue(child.isCancelled)
+        assertEquals(listOf("only"), plugin.executed.map { it.id })
+        assertEquals("the text-only synthesis must not run once cancelled", 1, adapter.recorded.size)
     }
 }

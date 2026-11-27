@@ -78,6 +78,9 @@ class AgentHarness(
 
             messages.add(HarnessMessage.Assistant(content = step.answerText, toolCalls = step.toolCalls))
             for (call in step.toolCalls) {
+                // Cancellation requested while a previous call was running must stop here,
+                // before anything else leaves the device.
+                coroutineContext.ensureActive()
                 if (executedCalls >= budget) {
                     // Surplus call in a step that already spent the budget: never executed,
                     // but still answered so the tool_call ↔ tool_result pairing stays valid.
@@ -127,6 +130,7 @@ class AgentHarness(
         // The model is still requesting tools after the budget is spent: ask for a text-only
         // synthesis. Adapter failures (network/API errors) propagate; only a blank answer
         // falls back.
+        coroutineContext.ensureActive()
         val finalStep = adapter.step(messages, emptyList())
         finalStep.reasoningText?.let { reasoningParts.add(it) }
         val answerText = finalStep.answerText?.takeIf { it.isNotBlank() } ?: STEP_LIMIT_FALLBACK
