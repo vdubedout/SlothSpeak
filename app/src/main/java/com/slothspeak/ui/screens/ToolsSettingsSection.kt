@@ -72,7 +72,9 @@ fun ToolsSettingsSection(
     onResetAllowedWriteHosts: () -> Unit,
     onSaveHostAuthProfile: (host: String, headerName: String, headerValue: String) -> Unit,
     onDeleteHostAuthProfile: (String) -> Unit,
-    onSetMaxToolCalls: (Int) -> Unit
+    onSetMaxToolCalls: (Int) -> Unit,
+    onSetToolSafetyPrompt: (String) -> Unit,
+    onResetToolSafetyPrompt: () -> Unit
 ) {
     var showBraveKeyDialog by remember { mutableStateOf(false) }
     var showAuthProfileDialog by remember { mutableStateOf(false) }
@@ -257,6 +259,48 @@ fun ToolsSettingsSection(
                 value = state.maxToolCalls,
                 onCommit = onSetMaxToolCalls
             )
+        }
+    }
+
+    Spacer(modifier = Modifier.height(8.dp))
+
+    // ---- Tool safety prompt (prompt-injection guard) ----
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = "Tool safety",
+                style = MaterialTheme.typography.titleSmall
+            )
+            Text(
+                text = "Appended to the system prompt whenever a tool plugin is active, so the " +
+                    "model treats everything a tool returns as untrusted data and never as instructions.",
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary,
+                modifier = Modifier.padding(top = 2.dp, bottom = 8.dp)
+            )
+            OutlinedTextField(
+                value = state.toolSafetyPrompt,
+                onValueChange = onSetToolSafetyPrompt,
+                label = { Text("Tool safety prompt") },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(160.dp),
+                maxLines = 8,
+                colors = toolsFieldColors()
+            )
+            if (state.toolSafetyPrompt != ToolConfigManager.DEFAULT_TOOL_SAFETY_PROMPT) {
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = onResetToolSafetyPrompt,
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = AccentGreen)
+                ) {
+                    Text("Reset to default")
+                }
+            }
         }
     }
 

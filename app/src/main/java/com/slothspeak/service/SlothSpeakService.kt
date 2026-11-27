@@ -52,6 +52,7 @@ import com.slothspeak.tools.ToolConfirmationRequest
 import com.slothspeak.tools.ToolRegistry
 import com.slothspeak.tools.ToolTraceEntry
 import com.slothspeak.tools.answerWithToolTraceDigest
+import com.slothspeak.tools.composeToolSystemPrompt
 import com.slothspeak.tools.formatToolSummary
 import com.slothspeak.tools.plugins.BraveSearchPlugin
 import com.slothspeak.tools.plugins.HttpRequestPlugin
@@ -445,8 +446,9 @@ class SlothSpeakService : Service() {
      * retry pipelines so all three take the same path through the tool harness.
      *
      * With at least one enabled *and* configured tool plugin the request goes through
-     * [AgentHarness]: tool calls are executed and fed back until the model answers in text.
-     * Without tools it is a single plain chat completion, exactly as before tools existed.
+     * [AgentHarness]: tool calls are executed and fed back until the model answers in text,
+     * and the configured tool-safety preamble is appended to the system prompt. Without tools
+     * it is a single plain chat completion with the user's prompt as-is.
      * Transport/API errors propagate to the caller.
      *
      * @param elapsedSecondsProvider elapsed time of the LLM step so far; forwarded to
@@ -459,8 +461,14 @@ class SlothSpeakService : Service() {
         elapsedSecondsProvider: () -> Int
     ): CompatLlmOutcome {
         lastToolCallsJson = null
-        val systemPrompt = apiKeyManager.getSystemPrompt()
-        if (toolRegistry.activeTools().isEmpty()) {
+        val activeTools = toolRegistry.activeTools()
+        // The safety preamble only joins the prompt while tools can actually run (issue #15).
+        val systemPrompt = composeToolSystemPrompt(
+            basePrompt = apiKeyManager.getSystemPrompt(),
+            toolSafetyPrompt = toolConfigManager.getToolSafetyPrompt(),
+            toolsActive = activeTools.isNotEmpty()
+        )
+        if (activeTools.isEmpty()) {
             val result = openAiCompatibleClient.createResponse(
                 question = questionText,
                 history = history,
@@ -484,7 +492,7 @@ class SlothSpeakService : Service() {
             )
         }
 
-        Log.d(TAG, "Running agent harness with tools: ${toolRegistry.activeTools().joinToString { it.name }} (max ${toolConfigManager.getMaxToolCalls()} calls)")
+        Log.d(TAG, "Running agent harness with tools: ${activeTools.joinToString { it.name }} (max ${toolConfigManager.getMaxToolCalls()} calls)")
         val result = AgentHarness(
             OpenAiCompatibleChatAdapter(openAiCompatibleClient, compatProvider),
             toolRegistry,

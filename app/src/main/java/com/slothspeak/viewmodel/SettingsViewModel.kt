@@ -880,6 +880,20 @@ class SettingsViewModel @JvmOverloads constructor(
         refreshTools()
     }
 
+    /**
+     * Persists the tool-safety preamble as typed (blank resets it to the default). The state
+     * mirrors the raw text so typing stays responsive, like [setSystemPrompt].
+     */
+    fun setToolSafetyPrompt(prompt: String) {
+        toolConfigManager.setToolSafetyPrompt(prompt)
+        _state.value = _state.value.copy(tools = _state.value.tools.copy(toolSafetyPrompt = prompt))
+    }
+
+    fun resetToolSafetyPrompt() {
+        toolConfigManager.resetToolSafetyPrompt()
+        refreshTools()
+    }
+
     fun removeAllowedWriteHost(host: String) {
         toolConfigManager.removeAllowedWriteHost(host)
         refreshTools()
