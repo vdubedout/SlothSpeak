@@ -157,6 +157,48 @@ class AgentHarnessTest {
     }
 
     @Test
+    fun run_historyWithToolCallDigests_replaysEveryTurnInOrderVerbatim() = runBlocking {
+        val adapter = ScriptedAdapter { _, _ -> textStep("ok") }
+        val harness = AgentHarness(adapter, ToolRegistry(listOf(defaultPlugin())))
+        // What the service builds (see ToolTraceHistoryDigestTest): answers that used tools
+        // carry the digest (issue #14), including the very first assistant turn; answers
+        // without tools stay plain. The harness only replays them verbatim, in order.
+        val digest1 = "It is sunny in Paris.\n\n[Previous tool calls for this answer: " +
+            "web_search(query=\"paris\") -> sunny, 21°C]\nThese tool calls already ran."
+        val digest3 = "16°C in Lyon.\n\n[Previous tool calls for this answer: " +
+            "lookup(q=\"lyon\") -> ERROR: lookup failed]\nThese tool calls already ran."
+        val history = listOf(
+            "Weather in Paris?" to digest1,
+            "And the capital?" to "Paris.",
+            "Weather in Lyon?" to digest3
+        )
+
+        harness.run(QUESTION, history = history, systemPrompt = SYSTEM_PROMPT)
+
+        assertEquals(
+            listOf(
+                HarnessMessage.System(SYSTEM_PROMPT),
+                HarnessMessage.User("Weather in Paris?"),
+                HarnessMessage.Assistant(digest1),
+                HarnessMessage.User("And the capital?"),
+                HarnessMessage.Assistant("Paris."),
+                HarnessMessage.User("Weather in Lyon?"),
+                HarnessMessage.Assistant(digest3),
+                HarnessMessage.User(QUESTION)
+            ),
+            adapter.recorded[0].messages
+        )
+        // The digest content reaches the model intact, as part of the assistant turn.
+        val first = adapter.recorded[0].messages[2] as HarnessMessage.Assistant
+        assertTrue(first.content!!.startsWith("It is sunny in Paris.\n\n[Previous tool calls for this answer: web_search("))
+        assertTrue(first.content!!.contains("-> sunny, 21°C"))
+        assertTrue(first.toolCalls.isEmpty())
+        val third = adapter.recorded[0].messages[6] as HarnessMessage.Assistant
+        assertTrue(third.content!!.contains("lookup("))
+        assertTrue(third.content!!.contains("ERROR: lookup failed"))
+    }
+
+    @Test
     fun run_blankReasoningYieldsNullReasoningText() = runBlocking {
         val adapter = ScriptedAdapter { _, _ -> textStep("ok", reasoning = "   ") }
         val harness = AgentHarness(adapter, ToolRegistry(listOf(defaultPlugin())))

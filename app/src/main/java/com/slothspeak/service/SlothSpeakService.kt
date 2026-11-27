@@ -51,6 +51,7 @@ import com.slothspeak.tools.ToolConfirmationHandler
 import com.slothspeak.tools.ToolConfirmationRequest
 import com.slothspeak.tools.ToolRegistry
 import com.slothspeak.tools.ToolTraceEntry
+import com.slothspeak.tools.answerWithToolTraceDigest
 import com.slothspeak.tools.formatToolSummary
 import com.slothspeak.tools.plugins.BraveSearchPlugin
 import com.slothspeak.tools.plugins.HttpRequestPlugin
@@ -424,6 +425,20 @@ class SlothSpeakService : Service() {
         /** Serialised [ToolTraceEntry] list, or null when no tool was used. */
         val toolCallsJson: String?
     )
+
+    /**
+     * Conversation history for the compat LLM step, oldest first. Each previous answer that
+     * used tools carries a digest of those calls (issue #14) so the model does not relaunch
+     * identical calls in a follow-up. Empty when the conversation is new.
+     */
+    private suspend fun loadCompatHistory(conversationId: Long?): List<Pair<String, String>> {
+        if (conversationId == null) return emptyList()
+        return withContext(Dispatchers.IO) {
+            database.conversationDao()
+                .getQAPairsForConversationOnce(conversationId)
+                .map { it.questionText to answerWithToolTraceDigest(it.answerText, it.toolCallsJson) }
+        }
+    }
 
     /**
      * Runs the LLM step for an OpenAI-compatible provider — shared by the voice, text and
@@ -970,16 +985,8 @@ class SlothSpeakService : Service() {
                 lastAnswerTextRich = result.answerTextRich
                 responseId = result.responseId
             } else if (isCompat && compatProvider != null) {
-                // Load conversation history for compat provider
-                val history = if (existingConversationId != null) {
-                    withContext(Dispatchers.IO) {
-                        database.conversationDao()
-                            .getQAPairsForConversationOnce(existingConversationId)
-                            .map { it.questionText to it.answerText }
-                    }
-                } else {
-                    emptyList()
-                }
+                // Load conversation history for compat provider (with tool-call digests)
+                val history = loadCompatHistory(existingConversationId)
                 val result = runCompatLlm(questionText, history, compatProvider) { currentElapsedSeconds() }
                 timerJob.cancel()
                 lastLlmResponseSeconds = ((System.currentTimeMillis() - llmStartTime) / 1000).toInt()
@@ -2083,15 +2090,7 @@ class SlothSpeakService : Service() {
                 lastAnswerTextRich = result.answerTextRich
                 responseId = result.responseId
             } else if (isCompat && compatProvider != null) {
-                val history = if (existingConversationId != null) {
-                    withContext(Dispatchers.IO) {
-                        database.conversationDao()
-                            .getQAPairsForConversationOnce(existingConversationId)
-                            .map { it.questionText to it.answerText }
-                    }
-                } else {
-                    emptyList()
-                }
+                val history = loadCompatHistory(existingConversationId)
                 val result = runCompatLlm(questionText, history, compatProvider) { currentElapsedSeconds() }
                 timerJob.cancel()
                 lastLlmResponseSeconds = ((System.currentTimeMillis() - llmStartTime) / 1000).toInt()
