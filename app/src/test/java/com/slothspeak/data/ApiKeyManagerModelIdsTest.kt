@@ -19,7 +19,13 @@ class ApiKeyManagerModelIdsTest {
             ApiKeyManager.OPENAI_MODELS
         )
         assertEquals(
-            listOf("gemini-4-carbon", "gemini-4-neon", "gemini-4-hydrogen", "gemini-4-argon"),
+            listOf(
+                "gemini-4-carbon",
+                "gemini-4-neon",
+                "gemini-4-hydrogen",
+                "gemini-4-argon",
+                "deep-research-max-preview-04-2026"
+            ),
             ApiKeyManager.GEMINI_MODELS
         )
         assertEquals(
@@ -27,6 +33,9 @@ class ApiKeyManagerModelIdsTest {
             ApiKeyManager.CLAUDE_MODELS
         )
         assertEquals(listOf("grok-4.7"), ApiKeyManager.GROK_MODELS)
+        // OpenAI retired its deep-research model; only the four chat models are offered.
+        assertEquals(4, ApiKeyManager.OPENAI_MODELS.size)
+        assertFalse(ApiKeyManager.OPENAI_MODELS.contains(ApiKeyManager.MODEL_DEEP_RESEARCH))
     }
 
     @Test
@@ -76,10 +85,13 @@ class ApiKeyManagerModelIdsTest {
     }
 
     @Test
-    fun deepResearch_isNotOfferedInThePickerButStaysSelectableForLegacyRows() {
+    fun geminiDeepResearch_staysSelectableWhileOpenAiDeepResearchDoesNot() {
         assertFalse(ApiKeyManager.OPENAI_MODELS.contains(ApiKeyManager.MODEL_DEEP_RESEARCH))
-        assertFalse(ApiKeyManager.GEMINI_MODELS.contains(ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH))
+        assertTrue(ApiKeyManager.GEMINI_MODELS.contains(ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH))
         assertTrue(ApiKeyManager.isDeepResearchModel(ApiKeyManager.MODEL_DEEP_RESEARCH))
         assertTrue(ApiKeyManager.isDeepResearchModel(ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH))
+        // Neither deep-research agent exposes thinking/effort levels.
+        assertFalse(ApiKeyManager.supportsOpenAiReasoningEffort(ApiKeyManager.MODEL_DEEP_RESEARCH))
+        assertFalse(ApiKeyManager.supportsGeminiThinking(ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH))
     }
 }

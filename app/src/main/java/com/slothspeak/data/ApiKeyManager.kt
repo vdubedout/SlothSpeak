@@ -688,7 +688,9 @@ class ApiKeyManager(context: Context) {
             MODEL_GEMINI_CARBON,
             MODEL_GEMINI_NEON,
             MODEL_GEMINI_HYDROGEN,
-            MODEL_GEMINI_ARGON
+            MODEL_GEMINI_ARGON,
+            // Deep Research stays selectable, but exposes no thinking levels.
+            MODEL_GEMINI_DEEP_RESEARCH
         )
         val CLAUDE_MODELS = listOf(
             MODEL_CLAUDE_OPUS,
@@ -714,7 +716,9 @@ class ApiKeyManager(context: Context) {
 
         fun isOpenAiModel(model: String): Boolean = model in OPENAI_MODELS
 
-        fun isGeminiModel(model: String): Boolean = model in GEMINI_MODELS
+        /** Chat models in the Gemini family; the deep-research agent has its own branch. */
+        fun isGeminiModel(model: String): Boolean =
+            model in GEMINI_MODELS && model != MODEL_GEMINI_DEEP_RESEARCH
 
         fun isClaudeModel(model: String): Boolean = model in CLAUDE_MODELS
 
@@ -730,7 +734,7 @@ class ApiKeyManager(context: Context) {
         fun supportsOpenAiReasoningEffort(model: String): Boolean = model in OPENAI_MODELS
 
         /** Whether the model exposes Gemini thinking levels (not the deep-research agent). */
-        fun supportsGeminiThinking(model: String): Boolean = model in GEMINI_MODELS
+        fun supportsGeminiThinking(model: String): Boolean = isGeminiModel(model)
 
         /**
          * Model ids that older installs may still have persisted map to the current default

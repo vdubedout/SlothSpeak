@@ -218,10 +218,6 @@ class LlmProviderCatalogTest {
     }
 
     // ---------------------------------------------------------------
-    // Display formatting
-    // ---------------------------------------------------------------
-
-    // ---------------------------------------------------------------
     // Model catalogue (issue #16)
     // ---------------------------------------------------------------
 
@@ -232,7 +228,13 @@ class LlmProviderCatalogTest {
             ApiKeyManager.OPENAI_MODELS
         )
         assertEquals(
-            listOf("gemini-4-carbon", "gemini-4-neon", "gemini-4-hydrogen", "gemini-4-argon"),
+            listOf(
+                "gemini-4-carbon",
+                "gemini-4-neon",
+                "gemini-4-hydrogen",
+                "gemini-4-argon",
+                "deep-research-max-preview-04-2026"
+            ),
             ApiKeyManager.GEMINI_MODELS
         )
         assertEquals(
@@ -241,9 +243,10 @@ class LlmProviderCatalogTest {
         )
         assertEquals(listOf("grok-4.7"), ApiKeyManager.GROK_MODELS)
 
-        // Deep-research ids stay available to the machinery but are not picker entries.
+        // OpenAI retired o3-deep-research, so it is not offered; Gemini Deep Research stays selectable.
         assertFalse(ApiKeyManager.OPENAI_MODELS.contains(ApiKeyManager.MODEL_DEEP_RESEARCH))
-        assertFalse(ApiKeyManager.GEMINI_MODELS.contains(ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH))
+        assertTrue(ApiKeyManager.GEMINI_MODELS.contains(ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH))
+        assertEquals(4, ApiKeyManager.OPENAI_MODELS.size)
     }
 
     @Test
@@ -267,12 +270,16 @@ class LlmProviderCatalogTest {
     @Test
     fun familyChecks_recogniseEveryNewModel() {
         ApiKeyManager.OPENAI_MODELS.forEach { assertTrue(it, ApiKeyManager.isOpenAiModel(it)) }
-        ApiKeyManager.GEMINI_MODELS.forEach { assertTrue(it, ApiKeyManager.isGeminiModel(it)) }
+        ApiKeyManager.GEMINI_MODELS
+            .filter { it != ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH }
+            .forEach { assertTrue(it, ApiKeyManager.isGeminiModel(it)) }
         ApiKeyManager.CLAUDE_MODELS.forEach { assertTrue(it, ApiKeyManager.isClaudeModel(it)) }
         ApiKeyManager.GROK_MODELS.forEach { assertTrue(it, ApiKeyManager.isGrokModel(it)) }
 
         assertFalse(ApiKeyManager.isOpenAiModel(ApiKeyManager.MODEL_DEEP_RESEARCH))
+        // The Gemini deep-research agent is not a chat model, but it is still selectable.
         assertFalse(ApiKeyManager.isGeminiModel(ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH))
+        assertTrue(ApiKeyManager.GEMINI_MODELS.contains(ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH))
         assertFalse(ApiKeyManager.isClaudeModel(ApiKeyManager.MODEL_GROK))
         assertTrue(ApiKeyManager.isDeepResearchModel(ApiKeyManager.MODEL_DEEP_RESEARCH))
         assertTrue(ApiKeyManager.isDeepResearchModel(ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH))
@@ -284,10 +291,13 @@ class LlmProviderCatalogTest {
             assertTrue("OpenAI $model should expose effort", ApiKeyManager.supportsOpenAiReasoningEffort(model))
             assertFalse("Gemini $model should not expose Gemini thinking", ApiKeyManager.supportsGeminiThinking(model))
         }
-        ApiKeyManager.GEMINI_MODELS.forEach { model ->
-            assertTrue("Gemini $model should expose thinking", ApiKeyManager.supportsGeminiThinking(model))
-            assertFalse("OpenAI $model should not expose effort", ApiKeyManager.supportsOpenAiReasoningEffort(model))
-        }
+        ApiKeyManager.GEMINI_MODELS
+            .filter { it != ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH }
+            .forEach { model ->
+                assertTrue("Gemini $model should expose thinking", ApiKeyManager.supportsGeminiThinking(model))
+                assertFalse("OpenAI $model should not expose effort", ApiKeyManager.supportsOpenAiReasoningEffort(model))
+            }
+        // Deep research agents keep their fixed effort, even when selectable.
         assertFalse(ApiKeyManager.supportsOpenAiReasoningEffort(ApiKeyManager.MODEL_DEEP_RESEARCH))
         assertFalse(ApiKeyManager.supportsGeminiThinking(ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH))
     }
@@ -310,7 +320,7 @@ class LlmProviderCatalogTest {
                 openAi.thinkingLevels
             )
         }
-        for (model in ApiKeyManager.GEMINI_MODELS) {
+        for (model in ApiKeyManager.GEMINI_MODELS.filter { it != ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH }) {
             store.selectedModelValue = model
             val gemini = catalog.getConfiguredProviders().first { it.type == LlmProviderType.GEMINI }
             assertEquals(model, gemini.modelId)
@@ -320,6 +330,22 @@ class LlmProviderCatalogTest {
                 gemini.thinkingLevels
             )
         }
+    }
+
+    @Test
+    fun getConfiguredProviders_geminiDeepResearchIsSelectableWithoutThinkingLevels() {
+        val store = FakeStore().apply {
+            builtinKeys += ApiKeyManager.LLM_PROVIDER_GEMINI
+            selectedModelValue = ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH
+        }
+        val catalog = LlmProviderCatalog(store)
+
+        val gemini = catalog.getConfiguredProviders().single { it.type == LlmProviderType.GEMINI }
+        assertEquals(ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH, gemini.modelId)
+        assertTrue(gemini.active)
+        assertTrue(gemini.availableModels.contains(ApiKeyManager.MODEL_GEMINI_DEEP_RESEARCH))
+        assertFalse("deep research keeps its fixed effort", gemini.supportsThinking)
+        assertEquals(emptyList<String>(), gemini.thinkingLevels)
     }
 
     @Test

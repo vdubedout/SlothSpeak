@@ -78,13 +78,14 @@ There is no server backend. The app calls AI provider APIs directly from the dev
 | Google | Gemini 4 Neon | `gemini-4-neon` | Configurable thinking level (low/medium/high) |
 | Google | Gemini 4 Hydrogen | `gemini-4-hydrogen` | Configurable thinking level (low/medium/high) |
 | Google | Gemini 4 Argon | `gemini-4-argon` | Configurable thinking level (low/medium/high) |
+| Google | Gemini Deep Research Max | `deep-research-max-preview-04-2026` | Async polling with Google Search; no thinking levels |
 | Anthropic | Claude Opus 5.5 | `claude-opus-5-5` | Default; adaptive thinking, effort (low/medium/high/max) |
 | Anthropic | Claude Fable 5.2 | `claude-fable-5-2` | Adaptive thinking, effort (low/medium/high/max) |
 | Anthropic | Claude Sonnet 5.5 | `claude-sonnet-5-5` | Adaptive thinking, effort (low/medium/high/max) |
 | Anthropic | Claude Haiku 5.5 | `claude-haiku-5-5` | Adaptive thinking, effort (low/medium/high/max) |
 | xAI | Grok 4.7 | `grok-4.7` | Optional X (Twitter) search |
 
-The older deep-research agent IDs (`o3-deep-research`, `deep-research-max-preview-04-2026`) are still supported by the pipeline for conversations that already selected them; they are no longer offered in the model picker.
+OpenAI Deep Research (`o3-deep-research`) is temporarily unavailable because OpenAI retired the model in July 2026. Gemini Deep Research (`deep-research-max-preview-04-2026`) remains available. Migration to GPT-6 Astra + web search is tracked in issue #19.
 
 Each provider requires its own API key, configured in Settings. Speech-to-Text can use OpenAI, Together, any OpenAI-compatible endpoint, or the on-device FUTO provider (no key). Text-to-Speech can use OpenAI, Together, a custom endpoint, or the Android system engine.
 
@@ -302,6 +303,7 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 - TTS retry regenerates all chunks rather than only failed ones
 - No progressive playback (must wait for all TTS chunks before audio begins)
 - On-device STT requires a ~650 MB model (downloaded or imported); the streaming model is buffered over the finished VAD recording rather than shown live in the UI
+- OpenAI Deep Research is temporarily unavailable because `o3-deep-research` was retired by OpenAI in July 2026; Gemini Deep Research (`deep-research-max-preview-04-2026`) remains available; migration to GPT-6 Astra + web search is tracked in issue #19
 
 ## License
 
