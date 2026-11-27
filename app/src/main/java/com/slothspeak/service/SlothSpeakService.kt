@@ -2290,7 +2290,7 @@ class SlothSpeakService : Service() {
     private fun cleanupPendingTtsSessionDir() {
         val tempAudioDir = pendingTtsSessionDir ?: return
         pendingTtsSessionDir = null
-        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO).launch {
+        serviceScope.launch(Dispatchers.IO) {
             try {
                 if (tempAudioDir.exists()) {
                     tempAudioDir.deleteRecursively()
@@ -2344,7 +2344,7 @@ class SlothSpeakService : Service() {
                 val effort = lastReasoningEffort
                 val llmSec = lastLlmResponseSeconds
                 val toolsJson = lastToolCallsJson
-                kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO).launch {
+                serviceScope.launch(Dispatchers.IO) {
                     try {
                         database.conversationDao().updateQAPairResult(
                             qaPairId = pairId,
@@ -2363,7 +2363,7 @@ class SlothSpeakService : Service() {
                     }
                 }
             } else {
-                kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO).launch {
+                serviceScope.launch(Dispatchers.IO) {
                     try {
                         database.conversationDao().deleteQAPair(pairId)
                         if (wasNew && convId != null) {

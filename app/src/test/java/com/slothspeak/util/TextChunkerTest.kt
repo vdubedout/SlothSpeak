@@ -32,11 +32,19 @@ class TextChunkerTest {
     @Test
     fun chunkText_closingQuoteAtExactBoundary_neverExceedsLimit() {
         val text = "He said \"hello.\" Next sentence follows here."
-        // "He said \"hello." is 16 chars; closing quote is at index 16 (17th char)
-        val chunks = TextChunker.chunkText(text, maxChunkSize = 16)
+        // "He said \"hello.\"" is 16 chars (closing quote at index 15)
+        val exactFit = TextChunker.chunkText(text, maxChunkSize = 16)
+        assertEquals(
+            listOf("He said \"hello.\"", "Next sentence", "follows here."),
+            exactFit
+        )
 
-        assertTrue(chunks.all { it.length <= 16 })
-        assertTrue(chunks.size >= 2)
+        // At 15 chars the closing quote would exceed the limit, so it stays out of chunk 0
+        val quoteOverflow = TextChunker.chunkText(text, maxChunkSize = 15)
+        assertEquals(
+            listOf("He said \"hello.", "\" Next", "sentence", "follows here."),
+            quoteOverflow
+        )
     }
 
     @Test

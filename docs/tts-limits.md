@@ -36,3 +36,5 @@ Note: Third-party TTS engines installed on Android can report different values f
 ## Error Recovery
 
 If TTS still fails (for example, missing voice data or an unexpected engine error), `StatusIndicator` displays both **Retry** (when retryable) and **Cancel**. Tapping **Cancel** calls `dismissError()` to return the pipeline to `Idle`, persist the already-generated LLM text answer (when available), clean up any incomplete temporary audio files, and allow immediate follow-up questions while keeping the answer readable on screen.
+
+A TTS-failed pair is persisted with its answer text and no audio, and tapping **Read aloud** (`speakReply`) re-synthesizes audio on demand.

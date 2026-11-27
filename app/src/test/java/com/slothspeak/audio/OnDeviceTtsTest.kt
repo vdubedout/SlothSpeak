@@ -15,6 +15,7 @@ import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import java.io.File
+import java.util.concurrent.ConcurrentLinkedQueue
 
 /**
  * On-device TTS config-level and chunk-limit tests.
@@ -95,7 +96,7 @@ class OnDeviceTtsTest {
 
     @Test
     fun ttsProcessor_chunksUsingSynthesizerMaxChunkChars() = runBlocking {
-        val receivedChunks = mutableListOf<String>()
+        val receivedChunks = ConcurrentLinkedQueue<String>()
         val fakeSynthesizer = object : TtsSynthesizer {
             override val maxChunkChars: Int = 100
 
@@ -106,11 +107,14 @@ class OnDeviceTtsTest {
         }
 
         val longText = (1..8).joinToString(" ") { "Sentence number $it is moderately long for testing." }
+        val expectedChunks = TextChunker.chunkText(longText, maxChunkSize = 100)
         val processor = TtsProcessor(fakeSynthesizer, tempFolder.newFolder("audio"))
         val files = processor.processText(longText)
 
-        assertTrue("Expected multiple chunks, got ${receivedChunks.size}", receivedChunks.size > 1)
-        assertEquals(receivedChunks.size, files.size)
+        assertTrue("Expected multiple chunks, got ${expectedChunks.size}", expectedChunks.size > 1)
+        assertEquals(expectedChunks.size, receivedChunks.size)
+        assertEquals(expectedChunks.size, files.size)
+        assertEquals(expectedChunks.toSet(), receivedChunks.toSet())
         assertTrue(
             "Every chunk must respect synthesizer.maxChunkChars=100, got lengths ${receivedChunks.map { it.length }}",
             receivedChunks.all { it.length <= 100 }
