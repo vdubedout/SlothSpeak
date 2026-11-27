@@ -104,16 +104,67 @@ class DismissErrorMetadataTest {
             SlothSpeakService.resolveTtsRetryTarget(readAloudWithoutEarlyPair, hasEarlyPipelinePair = false)
         )
 
+        val readAloudWithEarlyPair = readAloudFlagged.copy(fromReadAloud = true, qaPairId = 42L)
+        assertEquals(
+            SlothSpeakService.Companion.TtsRetryTarget.READ_ALOUD,
+            SlothSpeakService.resolveTtsRetryTarget(readAloudWithEarlyPair, hasEarlyPipelinePair = true)
+        )
+
+        val readAloudPlayback = readAloudFlagged.copy(failedStep = SlothSpeakService.FailedStep.PLAYBACK)
+        assertEquals(
+            SlothSpeakService.Companion.TtsRetryTarget.READ_ALOUD,
+            SlothSpeakService.resolveTtsRetryTarget(readAloudPlayback, hasEarlyPipelinePair = false)
+        )
+
         val pipelineTtsError = readAloudFlagged.copy(fromReadAloud = false, qaPairId = 42L)
         assertEquals(
             SlothSpeakService.Companion.TtsRetryTarget.PIPELINE,
             SlothSpeakService.resolveTtsRetryTarget(pipelineTtsError, hasEarlyPipelinePair = true)
         )
 
+        val pipelinePlaybackError = pipelineTtsError.copy(failedStep = SlothSpeakService.FailedStep.PLAYBACK)
+        assertEquals(
+            SlothSpeakService.Companion.TtsRetryTarget.PIPELINE,
+            SlothSpeakService.resolveTtsRetryTarget(pipelinePlaybackError, hasEarlyPipelinePair = true)
+        )
+
         val llmError = pipelineTtsError.copy(failedStep = SlothSpeakService.FailedStep.LLM)
         assertEquals(
             SlothSpeakService.Companion.TtsRetryTarget.NONE,
             SlothSpeakService.resolveTtsRetryTarget(llmError, hasEarlyPipelinePair = true)
+        )
+    }
+
+    @Test
+    fun resolveDismissErrorAction_isolatesReadAloudErrorsFromEarlyPipelineCleanup() {
+        val readAloudError = SlothSpeakService.PipelineState.Error(
+            message = "Custom TTS server error",
+            failedStep = SlothSpeakService.FailedStep.TTS,
+            questionText = "Q",
+            answerText = "A",
+            fromReadAloud = true
+        )
+        val pipelineError = readAloudError.copy(fromReadAloud = false)
+
+        assertEquals(
+            SlothSpeakService.Companion.DismissErrorAction.NONE,
+            SlothSpeakService.resolveDismissErrorAction(null, isPipelineActive = false)
+        )
+        assertEquals(
+            SlothSpeakService.Companion.DismissErrorAction.DISMISS_READ_ALOUD_IDLE,
+            SlothSpeakService.resolveDismissErrorAction(readAloudError, isPipelineActive = false)
+        )
+        assertEquals(
+            SlothSpeakService.Companion.DismissErrorAction.DISMISS_READ_ALOUD_RESTORE_PIPELINE,
+            SlothSpeakService.resolveDismissErrorAction(readAloudError, isPipelineActive = true)
+        )
+        assertEquals(
+            SlothSpeakService.Companion.DismissErrorAction.CANCEL_RUNNING_PIPELINE,
+            SlothSpeakService.resolveDismissErrorAction(pipelineError, isPipelineActive = true)
+        )
+        assertEquals(
+            SlothSpeakService.Companion.DismissErrorAction.DISMISS_PIPELINE_ERROR,
+            SlothSpeakService.resolveDismissErrorAction(pipelineError, isPipelineActive = false)
         )
     }
 }

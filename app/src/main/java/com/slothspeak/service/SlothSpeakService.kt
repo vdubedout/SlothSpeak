@@ -80,6 +80,7 @@ class SlothSpeakService : Service() {
     @Volatile private var pipelineSuperseded = false
     @Volatile private var lastPipelineProcessingState: PipelineState? = null
     @Volatile private var pendingPipelineResult: PipelineState.Complete? = null
+    @Volatile private var pendingPipelineError: PipelineState.Error? = null
     @Volatile var isPipelineRunning = false
         private set
 
@@ -622,9 +623,16 @@ class SlothSpeakService : Service() {
         return result
     }
 
+    private fun consumePendingPipelineError(): PipelineState.Error? {
+        val error = pendingPipelineError
+        pendingPipelineError = null
+        return error
+    }
+
     fun stopReplayOnly() {
         playbackJob?.cancel()
         synthesisJob?.cancel()
+        pendingReadAloudCallback = null
         audioPlayer.stop()
         audioFocusManager.abandonFocus()
         deactivateMediaSession()
@@ -632,6 +640,14 @@ class SlothSpeakService : Service() {
 
     fun restorePipelineState() {
         pipelineSuperseded = false
+        val pendingError = consumePendingPipelineError()
+        if (pendingError != null) {
+            isPipelineRunning = false
+            _activeConversationId.value = null
+            _pipelineState.value = pendingError
+            updateNotification("Error: ${pendingError.message}")
+            return
+        }
         // If the pipeline finished while a replay was active, consume the pending result
         val pending = consumePendingPipelineResult()
         if (pending != null) {
@@ -686,8 +702,13 @@ class SlothSpeakService : Service() {
         pipelineSuperseded = false
         lastPipelineProcessingState = null
         pendingPipelineResult = null
+        pendingPipelineError = null
         isPipelineRunning = true
         playbackJob?.cancel()
+        synthesisJob?.cancel()
+        synthesisJob = null
+        pendingReadAloudCallback = null
+        cleanupUncommittedTtsSessionDir()
         pipelineJob?.cancel()
         pipelineJob = serviceScope.launch {
             acquireWakeLock()
@@ -762,8 +783,13 @@ class SlothSpeakService : Service() {
         pipelineSuperseded = false
         lastPipelineProcessingState = null
         pendingPipelineResult = null
+        pendingPipelineError = null
         isPipelineRunning = true
         playbackJob?.cancel()
+        synthesisJob?.cancel()
+        synthesisJob = null
+        pendingReadAloudCallback = null
+        cleanupUncommittedTtsSessionDir()
         pipelineJob?.cancel()
         pipelineJob = serviceScope.launch {
             acquireWakeLock()
@@ -1161,8 +1187,8 @@ class SlothSpeakService : Service() {
         qaPairId: Long? = null,
         toolCallsJson: String? = null
     ) {
-        if (playbackJob?.isActive == true) {
-            // Replay in progress — save result so it can be restored later
+        if (pipelineSuperseded || playbackJob?.isActive == true) {
+            // Read-aloud or replay in progress — save result so it can be restored later
             pendingPipelineResult = PipelineState.Complete(
                 questionText, answerText, responseId, conversationId, audioFiles,
                 model = model, reasoningEffort = reasoningEffort,
@@ -1401,14 +1427,9 @@ class SlothSpeakService : Service() {
         if (e is CancellationException) {
             return
         }
-        if (!fromReadAloud) {
-            isPipelineRunning = false
-            // Don't delete early records (user might retry), but clear active indicator
-            _activeConversationId.value = null
-        }
         val isRetryable = e is ApiException && e.isRetryable
         val message = e.message ?: "An unexpected error occurred"
-        _pipelineState.value = PipelineState.Error(
+        val errorState = PipelineState.Error(
             message = message,
             failedStep = step,
             audioFile = audioFile,
@@ -1422,6 +1443,17 @@ class SlothSpeakService : Service() {
             model = model,
             fromReadAloud = fromReadAloud
         )
+        if (pipelineSuperseded && !fromReadAloud) {
+            // Read-aloud currently owns the UI/notification; defer background error until dismiss/restore.
+            pendingPipelineError = errorState
+            return
+        }
+        if (!fromReadAloud) {
+            isPipelineRunning = false
+            // Don't delete early records (user might retry), but clear active indicator
+            _activeConversationId.value = null
+        }
+        _pipelineState.value = errorState
         updateNotification("Error: $message")
     }
 
@@ -2344,21 +2376,48 @@ class SlothSpeakService : Service() {
      * history stays intact and follow-up questions remain possible.
      */
     fun dismissError() {
-        val errorState = _pipelineState.value as? PipelineState.Error ?: return
-        if (isPipelineRunning || pipelineJob?.isActive == true) {
-            if (errorState.fromReadAloud) {
-                // Background pipeline is still active — dismiss only the read-aloud error and restore it.
+        val errorState = _pipelineState.value as? PipelineState.Error
+        when (resolveDismissErrorAction(errorState, isPipelineRunning || pipelineJob?.isActive == true)) {
+            DismissErrorAction.NONE -> return
+            DismissErrorAction.DISMISS_READ_ALOUD_RESTORE_PIPELINE -> {
                 synthesisJob?.cancel()
                 synthesisJob = null
                 pendingReadAloudCallback = null
                 cleanupUncommittedTtsSessionDir()
                 restorePipelineState()
-            } else {
-                cancelPipeline()
+                return
             }
-            return
+            DismissErrorAction.DISMISS_READ_ALOUD_IDLE -> {
+                synthesisJob?.cancel()
+                synthesisJob = null
+                pendingReadAloudCallback = null
+                cleanupUncommittedTtsSessionDir()
+                val pendingBgError = consumePendingPipelineError()
+                if (pendingBgError != null) {
+                    pipelineSuperseded = false
+                    isPipelineRunning = false
+                    _activeConversationId.value = null
+                    _pipelineState.value = pendingBgError
+                    updateNotification("Error: ${pendingBgError.message}")
+                    return
+                }
+                pipelineSuperseded = false
+                playbackJob?.cancel()
+                audioPlayer.stop()
+                audioFocusManager.abandonFocus()
+                deactivateMediaSession()
+                _pipelineState.value = PipelineState.Idle
+                stopSelfWithWakeWordGuard()
+                return
+            }
+            DismissErrorAction.CANCEL_RUNNING_PIPELINE -> {
+                cancelPipeline()
+                return
+            }
+            DismissErrorAction.DISMISS_PIPELINE_ERROR -> Unit
         }
 
+        val pipelineError = errorState ?: return
         // Fail closed: any pending tool confirmation must never hang.
         denyPendingToolConfirmation()
 
@@ -2381,16 +2440,16 @@ class SlothSpeakService : Service() {
         _activeConversationId.value = null
 
         if (pairId != null) {
-            if (errorState.failedStep == FailedStep.TTS && errorState.answerText != null) {
-                val dbModel = errorState.model ?: lastLlmModel ?: run {
+            if (pipelineError.failedStep == FailedStep.TTS && pipelineError.answerText != null) {
+                val dbModel = pipelineError.model ?: lastLlmModel ?: run {
                     val selectedModel = apiKeyManager.getSelectedModel()
                     val compatId = apiKeyManager.getSelectedCompatProviderId()
                     val compatProvider = compatibleProviderManager.getProvider(compatId ?: "")
                     compatProvider?.modelId ?: selectedModel
                 }
-                val answer = errorState.answerText
-                val respId = errorState.responseId ?: ""
-                val rich = errorState.answerTextRich
+                val answer = pipelineError.answerText
+                val respId = pipelineError.responseId ?: ""
+                val rich = pipelineError.answerTextRich
                 val reasoning = lastReasoningText
                 val effort = lastReasoningEffort
                 val llmSec = lastLlmResponseSeconds
@@ -2441,6 +2500,7 @@ class SlothSpeakService : Service() {
 
     fun cancelPipeline() {
         isMuted = false
+        pendingPipelineError = null
         cleanupUncommittedTtsSessionDir()
         // Clean up early DB records
         val cancelledQaPairId = earlyQaPairId
@@ -2609,7 +2669,7 @@ class SlothSpeakService : Service() {
                 audioFocusManager.abandonFocus()
                 deactivateMediaSession()
 
-                // If the pipeline finished during this replay, auto-play its result
+                // If the pipeline finished during this replay, auto-play its result or surface deferred error
                 val pending = consumePendingPipelineResult()
                 if (pending != null) {
                     pipelineSuperseded = false
@@ -2623,8 +2683,17 @@ class SlothSpeakService : Service() {
                         toolCallsJson = pending.toolCallsJson
                     )
                 } else {
-                    _pipelineState.value = PipelineState.Idle
-                    stopSelfWithWakeWordGuard()
+                    val pendingError = consumePendingPipelineError()
+                    if (pendingError != null) {
+                        pipelineSuperseded = false
+                        isPipelineRunning = false
+                        _activeConversationId.value = null
+                        _pipelineState.value = pendingError
+                        updateNotification("Error: ${pendingError.message}")
+                    } else {
+                        _pipelineState.value = PipelineState.Idle
+                        stopSelfWithWakeWordGuard()
+                    }
                 }
             } finally {
                 releasePlaybackWakeLock()
@@ -3012,6 +3081,29 @@ class SlothSpeakService : Service() {
         const val NOTIFICATION_ID = 1
         /** Safety net per tool call (includes user approval time; see [onCreate]). */
         private const val TOOL_CALL_TIMEOUT_MS = 10 * 60_000L
+
+        internal enum class DismissErrorAction {
+            NONE,
+            DISMISS_READ_ALOUD_RESTORE_PIPELINE,
+            DISMISS_READ_ALOUD_IDLE,
+            CANCEL_RUNNING_PIPELINE,
+            DISMISS_PIPELINE_ERROR
+        }
+
+        /**
+         * Selects the cleanup path for [dismissError] so read-aloud errors never touch
+         * pipeline early-DB records or cancel an unrelated background pipeline.
+         */
+        internal fun resolveDismissErrorAction(
+            errorState: PipelineState.Error?,
+            isPipelineActive: Boolean
+        ): DismissErrorAction = when {
+            errorState == null -> DismissErrorAction.NONE
+            errorState.fromReadAloud && isPipelineActive -> DismissErrorAction.DISMISS_READ_ALOUD_RESTORE_PIPELINE
+            errorState.fromReadAloud -> DismissErrorAction.DISMISS_READ_ALOUD_IDLE
+            isPipelineActive -> DismissErrorAction.CANCEL_RUNNING_PIPELINE
+            else -> DismissErrorAction.DISMISS_PIPELINE_ERROR
+        }
 
         internal enum class TtsRetryTarget {
             NONE,

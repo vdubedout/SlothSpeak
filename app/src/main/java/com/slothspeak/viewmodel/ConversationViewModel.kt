@@ -76,7 +76,7 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
     private var serviceDeferred: CompletableDeferred<SlothSpeakService>? = null
     private var stateObserverJob: Job? = null
     private var loadConversationJob: Job? = null
-    @Volatile private var pendingReplyBind = false
+    private val pendingReplyBindCount = java.util.concurrent.atomic.AtomicInteger(0)
 
     // Wake word detection (on-device, openWakeWord)
     private var wakeWordDetector: WakeWordDetector? = null
@@ -1379,7 +1379,7 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
                         }
                         // Only unbind if the real pipeline isn't running or a reply bind isn't in flight.
                         // Replay finishing emits Idle but the pipeline may still be processing.
-                        if (!_isPipelineRunning.value && !pendingReplyBind) {
+                        if (!_isPipelineRunning.value && pendingReplyBindCount.get() == 0) {
                             maybeStartWakeWordDetection()
                             unbindServiceSafely()
                         }
@@ -1485,6 +1485,7 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
 
                     is SlothSpeakService.PipelineState.Error -> {
                         if (!state.fromReadAloud) {
+                            _isPipelineRunning.value = svcRunning
                             addOrUpdateProcessingItem(
                                 state.questionText ?: "Error",
                                 state.answerText,
@@ -1717,7 +1718,7 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
     fun replayAudio(files: List<File>, questionText: String = "", answerText: String = "") {
         stopWakeWordDetection()
         _uiState.value = _uiState.value.copy(serviceBindError = false)
-        pendingReplyBind = true
+        pendingReplyBindCount.incrementAndGet()
         val deferred = bindAndAwaitService()
 
         viewModelScope.launch {
@@ -1731,7 +1732,7 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
                 Log.e(TAG, "Failed to bind service for replay", e)
                 _uiState.value = _uiState.value.copy(serviceBindError = true)
             } finally {
-                pendingReplyBind = false
+                pendingReplyBindCount.decrementAndGet()
             }
         }
     }
@@ -1751,7 +1752,7 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         val answerText = item.answerText ?: return
         stopWakeWordDetection()
         _uiState.value = _uiState.value.copy(serviceBindError = false)
-        pendingReplyBind = true
+        pendingReplyBindCount.incrementAndGet()
         val deferred = bindAndAwaitService()
 
         viewModelScope.launch {
@@ -1784,7 +1785,7 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
                 Log.e(TAG, "Failed to bind service for speak reply", e)
                 _uiState.value = _uiState.value.copy(serviceBindError = true)
             } finally {
-                pendingReplyBind = false
+                pendingReplyBindCount.decrementAndGet()
             }
         }
     }
