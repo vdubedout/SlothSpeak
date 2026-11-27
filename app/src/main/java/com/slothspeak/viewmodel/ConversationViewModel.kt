@@ -1613,6 +1613,7 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         ) {
             currentState.conversationId?.let { _currentConversationId.value = it }
             currentState.responseId?.takeIf { it.isNotEmpty() }?.let { _currentResponseId.value = it }
+            _sessionItems.value = applyDismissedTtsErrorMetadata(_sessionItems.value, currentState)
         } else if (currentState is SlothSpeakService.PipelineState.Error &&
             currentState.answerText == null
         ) {
@@ -1954,5 +1955,28 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         private const val AUTO_SEND_DELAY_MS = 2_000L
         private const val AUTO_SEND_TICK_MS = 100L
         private const val WAV_HEADER_BYTES = 44L
+
+        /**
+         * Links a TTS-failed [SessionItem] to its persisted DB [SlothSpeakService.PipelineState.Error.qaPairId],
+         * [SlothSpeakService.PipelineState.Error.responseId], and [SlothSpeakService.PipelineState.Error.model]
+         * on dismiss so subsequent "Read aloud" taps persist audio and follow-ups stay chained.
+         */
+        internal fun applyDismissedTtsErrorMetadata(
+            items: List<SessionItem>,
+            errorState: SlothSpeakService.PipelineState.Error
+        ): List<SessionItem> {
+            if (items.isEmpty()) return items
+            val targetIndex = items.indexOfLast {
+                it.questionText == errorState.questionText && it.qaPairId == null
+            }.takeIf { it >= 0 } ?: items.lastIndex
+            val existing = items[targetIndex]
+            val updated = items.toMutableList()
+            updated[targetIndex] = existing.copy(
+                responseId = errorState.responseId?.takeIf { it.isNotEmpty() } ?: existing.responseId,
+                qaPairId = errorState.qaPairId ?: existing.qaPairId,
+                model = errorState.model ?: existing.model
+            )
+            return updated
+        }
     }
 }

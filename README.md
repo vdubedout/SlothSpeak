@@ -105,7 +105,7 @@ Capture audio (M4A via MediaRecorder, or WAV via AudioRecord for streaming STT/V
              adapter.step → tool calls → ToolRegistry.execute → results fed back
              → repeat (≤ 8 steps) until the model answers in text
     → Save answer to Room (updated early-saved QAPair)
-    → Split answer into ≤ 4096-char chunks at sentence boundaries
+    → Split answer into chunks at sentence boundaries per synthesizer (4096 cloud, 3000 on-device — see docs/tts-limits.md)
     → TTS all chunks in parallel (3 concurrent) → MP3/WAV files
     → Play sequentially with seek/speed controls, audio focus, MediaSession
     → Interactive mode: follow-up prompt + VAD listening → next question
@@ -203,7 +203,7 @@ SlothSpeakService (bound + started foreground service)
 | `├ components/RecordButton.kt` | Pulsing stop button |
 | `└ theme/` | Dark Material 3 theme (pure black + green/blue accents), typography |
 | `util/` | |
-| `├ TextChunker.kt` | Splits text ≤ 4096 chars at sentence boundaries (falls back to word boundaries) |
+| `├ TextChunker.kt` | Splits text per synthesizer (4096 cloud, 3000 on-device — see `docs/tts-limits.md`) at sentence boundaries (falls back to word boundaries) |
 | `├ CitationFormatter.kt` | Extracts URL citations → clean text (TTS) + rich text (numbered footnotes + sources) |
 | `└ SpeechTextCleaner.kt` | Strips markdown from Gemini Deep Research output for natural TTS reading |
 | `viewmodel/` | |

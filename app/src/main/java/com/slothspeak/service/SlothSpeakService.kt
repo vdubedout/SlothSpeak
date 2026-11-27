@@ -60,6 +60,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -106,7 +107,8 @@ class SlothSpeakService : Service() {
     private var vadRecorder: VadAudioRecorder? = null
     private var followUpJob: Job? = null
     private var onDeviceTtsSynthesizer: OnDeviceTtsSynthesizer? = null
-    @Volatile private var pendingTtsSessionDir: File? = null
+    /** Temp TTS audio directory for an in-flight synthesis run, cleared once saved or discarded. */
+    @Volatile private var uncommittedTtsSessionDir: File? = null
 
     // Wake word trigger state flow — observed by the ViewModel to start a fresh New Question
     private val _wakeWordTriggered = MutableStateFlow(false)
@@ -133,6 +135,7 @@ class SlothSpeakService : Service() {
     // LLM response metadata for current pipeline run
     private var lastLlmResponseSeconds: Int = 0
     private var lastReasoningEffort: String? = null
+    @Volatile private var lastLlmModel: String? = null
     @Volatile private var lastAnswerTextRich: String? = null
     @Volatile private var lastReasoningText: String? = null
     /** Serialised [ToolTraceEntry] list of the last LLM call; null when no tool ran. */
@@ -228,7 +231,9 @@ class SlothSpeakService : Service() {
             val responseId: String? = null,
             val isRetryable: Boolean = true,
             val answerTextRich: String? = null,
-            val conversationId: Long? = null
+            val conversationId: Long? = null,
+            val qaPairId: Long? = null,
+            val model: String? = null
         ) : PipelineState()
     }
 
@@ -827,6 +832,7 @@ class SlothSpeakService : Service() {
         val isCompat = compatId != null && compatibleProviderManager.getProvider(compatId) != null
         val compatProvider = if (isCompat) compatibleProviderManager.getProvider(compatId!!) else null
         val dbModel = compatProvider?.modelId ?: model
+        lastLlmModel = dbModel
 
         // Step 1: Transcribe
         emitProcessingState(PipelineState.Transcribing, "Transcribing question...")
@@ -1020,8 +1026,8 @@ class SlothSpeakService : Service() {
         val audioFiles: List<File>
         if (apiKeyManager.isTtsConfigured()) {
             val sessionDir = File(filesDir, "audio/${System.currentTimeMillis()}")
-            cleanupPendingTtsSessionDir()
-            pendingTtsSessionDir = sessionDir
+            cleanupUncommittedTtsSessionDir()
+            uncommittedTtsSessionDir = sessionDir
             val ttsConfig = apiKeyManager.getEffectiveTtsConfig()
             val ttsInstructions = if (ttsConfig.provider == ApiKeyManager.TTS_PROVIDER_OPENAI) {
                 apiKeyManager.getTtsInstructions()
@@ -1055,7 +1061,7 @@ class SlothSpeakService : Service() {
 
             try {
                 audioFiles = ttsProcessor.processText(ttsText)
-                pendingTtsSessionDir = null
+                uncommittedTtsSessionDir = null
             } catch (e: Exception) {
                 ttsMonitorJob.cancel()
                 handleError(
@@ -1286,7 +1292,9 @@ class SlothSpeakService : Service() {
                         answerText = answerText,
                         responseId = responseId,
                         answerTextRich = answerTextRich,
-                        conversationId = conversationId
+                        conversationId = conversationId,
+                        qaPairId = qaPairId,
+                        model = model
                     )
                     return@launch
                 }
@@ -1382,7 +1390,9 @@ class SlothSpeakService : Service() {
         answerText: String? = null,
         responseId: String? = null,
         answerTextRich: String? = null,
-        conversationId: Long? = earlyConversationId
+        conversationId: Long? = earlyConversationId,
+        qaPairId: Long? = earlyQaPairId,
+        model: String? = lastLlmModel
     ) {
         if (e is CancellationException) {
             return
@@ -1401,7 +1411,9 @@ class SlothSpeakService : Service() {
             responseId = responseId,
             isRetryable = isRetryable || step != FailedStep.TRANSCRIPTION,
             answerTextRich = answerTextRich,
-            conversationId = conversationId
+            conversationId = conversationId,
+            qaPairId = qaPairId,
+            model = model
         )
         updateNotification("Error: $message")
     }
@@ -1441,6 +1453,7 @@ class SlothSpeakService : Service() {
                             val isCompat = compatId != null && compatibleProviderManager.getProvider(compatId) != null
                             val compatProvider = if (isCompat) compatibleProviderManager.getProvider(compatId!!) else null
                             val dbModel = compatProvider?.modelId ?: model
+                            lastLlmModel = dbModel
                             val effortLabel = when {
                                 isAnyDeepResearch -> ""
                                 isCompat && compatProvider != null -> if (compatProvider.thinkingEnabled) compatProvider.reasoningEffort else ""
@@ -1563,6 +1576,7 @@ class SlothSpeakService : Service() {
                 val answer = currentState.answerText ?: return
                 val respId = currentState.responseId ?: return
                 val richText = currentState.answerTextRich
+                lastLlmModel = currentState.model ?: lastLlmModel
                 pipelineSuperseded = false
                 isPipelineRunning = true
                 playbackJob?.cancel()
@@ -1606,13 +1620,13 @@ class SlothSpeakService : Service() {
         val model = apiKeyManager.getSelectedModel()
         val compatId = apiKeyManager.getSelectedCompatProviderId()
         val compatProvider = compatibleProviderManager.getProvider(compatId ?: "")
-        val dbModel = compatProvider?.modelId ?: model
+        val dbModel = lastLlmModel ?: compatProvider?.modelId ?: model
 
         val audioFiles: List<File>
         if (apiKeyManager.isTtsConfigured()) {
             val sessionDir = File(filesDir, "audio/${System.currentTimeMillis()}")
-            cleanupPendingTtsSessionDir()
-            pendingTtsSessionDir = sessionDir
+            cleanupUncommittedTtsSessionDir()
+            uncommittedTtsSessionDir = sessionDir
             val ttsConfig = apiKeyManager.getEffectiveTtsConfig()
             val ttsInstructions = if (ttsConfig.provider == ApiKeyManager.TTS_PROVIDER_OPENAI) {
                 apiKeyManager.getTtsInstructions()
@@ -1646,7 +1660,7 @@ class SlothSpeakService : Service() {
 
             try {
                 audioFiles = ttsProcessor.processText(ttsText)
-                pendingTtsSessionDir = null
+                uncommittedTtsSessionDir = null
             } catch (e: Exception) {
                 ttsMonitorJob.cancel()
                 handleError(
@@ -1967,6 +1981,7 @@ class SlothSpeakService : Service() {
         val isCompat = compatId != null && compatibleProviderManager.getProvider(compatId) != null
         val compatProvider = if (isCompat) compatibleProviderManager.getProvider(compatId!!) else null
         val dbModel = compatProvider?.modelId ?: model
+        lastLlmModel = dbModel
 
         emitProcessingState(PipelineState.Transcribed(questionText))
 
@@ -2138,8 +2153,8 @@ class SlothSpeakService : Service() {
             audioFiles = emptyList()
         } else if (apiKeyManager.isTtsConfigured()) {
             val sessionDir = File(filesDir, "audio/${System.currentTimeMillis()}")
-            cleanupPendingTtsSessionDir()
-            pendingTtsSessionDir = sessionDir
+            cleanupUncommittedTtsSessionDir()
+            uncommittedTtsSessionDir = sessionDir
             val ttsConfig = apiKeyManager.getEffectiveTtsConfig()
             val ttsInstructions = if (ttsConfig.provider == ApiKeyManager.TTS_PROVIDER_OPENAI) {
                 apiKeyManager.getTtsInstructions()
@@ -2167,7 +2182,7 @@ class SlothSpeakService : Service() {
 
             try {
                 audioFiles = ttsProcessor.processText(answerText)
-                pendingTtsSessionDir = null
+                uncommittedTtsSessionDir = null
             } catch (e: Exception) {
                 ttsMonitorJob.cancel()
                 handleError(
@@ -2287,10 +2302,10 @@ class SlothSpeakService : Service() {
         stopSelfWithWakeWordGuard()
     }
 
-    private fun cleanupPendingTtsSessionDir() {
-        val tempAudioDir = pendingTtsSessionDir ?: return
-        pendingTtsSessionDir = null
-        serviceScope.launch(Dispatchers.IO) {
+    private fun cleanupUncommittedTtsSessionDir() {
+        val tempAudioDir = uncommittedTtsSessionDir ?: return
+        uncommittedTtsSessionDir = null
+        serviceScope.launch(Dispatchers.IO + NonCancellable) {
             try {
                 if (tempAudioDir.exists()) {
                     tempAudioDir.deleteRecursively()
@@ -2309,7 +2324,11 @@ class SlothSpeakService : Service() {
      * history stays intact and follow-up questions remain possible.
      */
     fun dismissError() {
-        val errorState = _pipelineState.value as? PipelineState.Error
+        val errorState = _pipelineState.value as? PipelineState.Error ?: return
+        if (isPipelineRunning || pipelineJob?.isActive == true) {
+            cancelPipeline()
+            return
+        }
 
         // Fail closed: any pending tool confirmation must never hang.
         denyPendingToolConfirmation()
@@ -2321,7 +2340,7 @@ class SlothSpeakService : Service() {
         vadRecorder?.release()
         vadRecorder = null
         bluetoothRouter.stopBluetoothRecordingRoute()
-        cleanupPendingTtsSessionDir()
+        cleanupUncommittedTtsSessionDir()
 
         val pairId = earlyQaPairId
         val convId = earlyConversationId
@@ -2332,11 +2351,13 @@ class SlothSpeakService : Service() {
         _activeConversationId.value = null
 
         if (pairId != null) {
-            if (errorState != null && errorState.failedStep == FailedStep.TTS && errorState.answerText != null) {
-                val model = apiKeyManager.getSelectedModel()
-                val compatId = apiKeyManager.getSelectedCompatProviderId()
-                val compatProvider = compatibleProviderManager.getProvider(compatId ?: "")
-                val dbModel = compatProvider?.modelId ?: model
+            if (errorState.failedStep == FailedStep.TTS && errorState.answerText != null) {
+                val dbModel = errorState.model ?: lastLlmModel ?: run {
+                    val selectedModel = apiKeyManager.getSelectedModel()
+                    val compatId = apiKeyManager.getSelectedCompatProviderId()
+                    val compatProvider = compatibleProviderManager.getProvider(compatId ?: "")
+                    compatProvider?.modelId ?: selectedModel
+                }
                 val answer = errorState.answerText
                 val respId = errorState.responseId ?: ""
                 val rich = errorState.answerTextRich
@@ -2344,7 +2365,7 @@ class SlothSpeakService : Service() {
                 val effort = lastReasoningEffort
                 val llmSec = lastLlmResponseSeconds
                 val toolsJson = lastToolCallsJson
-                serviceScope.launch(Dispatchers.IO) {
+                serviceScope.launch(Dispatchers.IO + NonCancellable) {
                     try {
                         database.conversationDao().updateQAPairResult(
                             qaPairId = pairId,
@@ -2363,7 +2384,7 @@ class SlothSpeakService : Service() {
                     }
                 }
             } else {
-                serviceScope.launch(Dispatchers.IO) {
+                serviceScope.launch(Dispatchers.IO + NonCancellable) {
                     try {
                         database.conversationDao().deleteQAPair(pairId)
                         if (wasNew && convId != null) {
@@ -2380,20 +2401,17 @@ class SlothSpeakService : Service() {
         }
 
         _pipelineState.value = PipelineState.Idle
-
-        if (!isPipelineRunning) {
-            isMuted = false
-            playbackJob?.cancel()
-            audioPlayer.stop()
-            audioFocusManager.abandonFocus()
-            deactivateMediaSession()
-            stopSelfWithWakeWordGuard()
-        }
+        isMuted = false
+        playbackJob?.cancel()
+        audioPlayer.stop()
+        audioFocusManager.abandonFocus()
+        deactivateMediaSession()
+        stopSelfWithWakeWordGuard()
     }
 
     fun cancelPipeline() {
         isMuted = false
-        cleanupPendingTtsSessionDir()
+        cleanupUncommittedTtsSessionDir()
         // Clean up early DB records
         val cancelledQaPairId = earlyQaPairId
         val cancelledConvId = earlyConversationId
@@ -2889,6 +2907,7 @@ class SlothSpeakService : Service() {
     }
 
     override fun onDestroy() {
+        cleanupUncommittedTtsSessionDir()
         pipelineJob?.cancel()
         playbackJob?.cancel()
         followUpJob?.cancel()
