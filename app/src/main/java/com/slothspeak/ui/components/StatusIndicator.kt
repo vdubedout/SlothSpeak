@@ -16,15 +16,19 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.FastRewind
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.HourglassTop
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Card
@@ -44,8 +48,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import com.slothspeak.service.SlothSpeakService
+import com.slothspeak.tools.plugins.BraveSearchPlugin
+import com.slothspeak.tools.plugins.HttpRequestPlugin
 import com.slothspeak.ui.theme.ErrorRed
 import com.slothspeak.ui.theme.AccentGreen
 import kotlinx.coroutines.delay
@@ -152,6 +159,52 @@ fun StatusIndicator(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
+                    }
+                }
+
+                is SlothSpeakService.PipelineState.UsingTool -> {
+                    Column {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                toolIcon(pipelineState.toolName),
+                                contentDescription = null,
+                                tint = AccentGreen,
+                                modifier = Modifier
+                                    .size(24.dp)
+                                    .alpha(pulseAlpha)
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Text(
+                                pipelineState.summary,
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                        }
+                        if (pipelineState.elapsedSeconds > 0) {
+                            Text(
+                                "${pipelineState.elapsedSeconds}s elapsed",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+
+                is SlothSpeakService.PipelineState.AwaitingToolConfirmation -> {
+                    val request = pipelineState.request
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Default.Security,
+                            contentDescription = null,
+                            tint = AccentGreen,
+                            modifier = Modifier
+                                .size(24.dp)
+                                .alpha(pulseAlpha)
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(
+                            "Waiting for approval: ${request.method} ${request.host}",
+                            style = MaterialTheme.typography.bodyLarge
+                        )
                     }
                 }
 
@@ -307,7 +360,9 @@ fun StatusIndicator(
                 else -> { /* Idle, Complete - not shown */ }
             }
 
-            // Mute toggle + Cancel button for active states (except Playing/ListeningForFollowUp which have their own controls)
+            // Mute toggle + Cancel button for active states (except Playing/ListeningForFollowUp which have their own controls).
+            // UsingTool and AwaitingToolConfirmation are active processing states: cancelling them
+            // also fails closed any pending tool confirmation.
             if (pipelineState !is SlothSpeakService.PipelineState.Error &&
                 pipelineState !is SlothSpeakService.PipelineState.Idle &&
                 pipelineState !is SlothSpeakService.PipelineState.Complete &&
@@ -337,6 +392,13 @@ fun StatusIndicator(
             }
         }
     }
+}
+
+/** Icon for the tool currently running: search glass, globe for HTTP, wrench for anything else. */
+private fun toolIcon(toolName: String): ImageVector = when (toolName) {
+    BraveSearchPlugin.TOOL_NAME -> Icons.Default.Search
+    HttpRequestPlugin.TOOL_NAME -> Icons.Default.Language
+    else -> Icons.Default.Build
 }
 
 @Composable

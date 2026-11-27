@@ -31,6 +31,8 @@ import com.slothspeak.data.LlmProviderCatalog
 import com.slothspeak.data.LlmProviderUiState
 import com.slothspeak.data.db.SlothSpeakDatabase
 import com.slothspeak.service.SlothSpeakService
+import com.slothspeak.tools.ToolConfirmationDecision
+import com.slothspeak.tools.ToolTraceEntry
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -154,7 +156,9 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         val answerTextRich: String? = null,
         val reasoningText: String? = null,
         /** Room id of the saved QAPair, when this item is backed by one. */
-        val qaPairId: Long? = null
+        val qaPairId: Long? = null,
+        /** Tools the model used to produce this answer (empty when none were used). */
+        val toolTrace: List<ToolTraceEntry> = emptyList()
     )
 
     private val serviceConnection = object : ServiceConnection {
@@ -589,6 +593,17 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
                 answer = null
                 richText = null
             }
+            // Tool use is part of the LLM step: same in-progress item as Thinking.
+            is SlothSpeakService.PipelineState.UsingTool -> {
+                question = state.questionText
+                answer = null
+                richText = null
+            }
+            is SlothSpeakService.PipelineState.AwaitingToolConfirmation -> {
+                question = state.questionText
+                answer = null
+                richText = null
+            }
             is SlothSpeakService.PipelineState.ThinkingComplete -> {
                 question = state.questionText
                 answer = state.answerText
@@ -645,6 +660,7 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
                         llmResponseSeconds = pair.llmResponseSeconds,
                         answerTextRich = pair.answerTextRich,
                         reasoningText = pair.reasoningText,
+                        toolTrace = ToolTraceEntry.fromJson(pair.toolCallsJson),
                         qaPairId = pair.id
                     )
                 }
@@ -1343,7 +1359,8 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
                                 llmResponseSeconds = state.llmResponseSeconds,
                                 answerTextRich = state.answerTextRich,
                                 reasoningText = state.reasoningText,
-                                qaPairId = state.qaPairId
+                                qaPairId = state.qaPairId,
+                                toolTrace = state.toolCallsJson?.let { ToolTraceEntry.fromJson(it) } ?: emptyList()
                             )
                         }
                         _isViewingActivePipeline.value = false
@@ -1438,6 +1455,14 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
                         addOrUpdateProcessingItem(state.questionText, null)
                     }
 
+                    is SlothSpeakService.PipelineState.UsingTool -> {
+                        addOrUpdateProcessingItem(state.questionText, null)
+                    }
+
+                    is SlothSpeakService.PipelineState.AwaitingToolConfirmation -> {
+                        addOrUpdateProcessingItem(state.questionText, null)
+                    }
+
                     is SlothSpeakService.PipelineState.ThinkingComplete -> {
                         addOrUpdateProcessingItem(state.questionText, state.answerText, answerTextRich = state.answerTextRich)
                     }
@@ -1520,7 +1545,8 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
         llmResponseSeconds: Int? = null,
         answerTextRich: String? = null,
         reasoningText: String? = null,
-        qaPairId: Long? = null
+        qaPairId: Long? = null,
+        toolTrace: List<ToolTraceEntry> = emptyList()
     ) {
         val items = _sessionItems.value.toMutableList()
         // Find the target item to update:
@@ -1545,7 +1571,8 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
             llmResponseSeconds = llmResponseSeconds,
             answerTextRich = answerTextRich,
             reasoningText = reasoningText,
-            qaPairId = qaPairId
+            qaPairId = qaPairId,
+            toolTrace = toolTrace
         )
 
         if (targetIndex >= 0) {
@@ -1559,7 +1586,9 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
                 answerTextRich = answerTextRich ?: existing.answerTextRich,
                 reasoningText = reasoningText ?: existing.reasoningText,
                 timestamp = existing.timestamp,
-                qaPairId = qaPairId ?: existing.qaPairId
+                qaPairId = qaPairId ?: existing.qaPairId,
+                // Playback states don't carry the trace; keep the one saved at Complete.
+                toolTrace = toolTrace.ifEmpty { existing.toolTrace }
             )
         } else {
             items.add(newItem)
@@ -1569,6 +1598,11 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
 
     fun retryFromError() {
         service?.retryFromError()
+    }
+
+    /** Answers the service's pending tool write-confirmation prompt (see [SlothSpeakService.resolveToolConfirmation]). */
+    fun resolveToolConfirmation(decision: ToolConfirmationDecision) {
+        service?.resolveToolConfirmation(decision)
     }
 
     fun cancelPipeline() {
@@ -1741,6 +1775,7 @@ class ConversationViewModel(application: Application) : AndroidViewModel(applica
                         llmResponseSeconds = pair.llmResponseSeconds,
                         answerTextRich = pair.answerTextRich,
                         reasoningText = pair.reasoningText,
+                        toolTrace = ToolTraceEntry.fromJson(pair.toolCallsJson),
                         qaPairId = pair.id
                     )
                 }

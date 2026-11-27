@@ -79,6 +79,7 @@ import com.slothspeak.ui.components.ChatComposer
 import com.slothspeak.ui.components.ModelSwitcherSheet
 import com.slothspeak.ui.components.QAPairCard
 import com.slothspeak.ui.components.StatusIndicator
+import com.slothspeak.ui.components.ToolConfirmationDialog
 import com.slothspeak.ui.theme.AccentGreen
 import com.slothspeak.ui.theme.ErrorRed
 import com.slothspeak.ui.theme.TextSecondary
@@ -240,6 +241,15 @@ fun MainScreen(
                     Text("Keep Running")
                 }
             }
+        )
+    }
+
+    // Tool write-confirmation: shown whenever the service is waiting for the user's decision,
+    // even when they navigated away from the active conversation (the pipeline is blocked on it).
+    (currentPipelineState as? SlothSpeakService.PipelineState.AwaitingToolConfirmation)?.let { pending ->
+        ToolConfirmationDialog(
+            request = pending.request,
+            onDecision = { viewModel.resolveToolConfirmation(it) }
         )
     }
 
@@ -405,7 +415,8 @@ fun MainScreen(
                                 answerTextRich = item.answerTextRich,
                                 reasoningText = item.reasoningText,
                                 canSpeak = uiState.ttsConfigured,
-                                onSpeakClick = { viewModel.speakReply(item) }
+                                onSpeakClick = { viewModel.speakReply(item) },
+                                toolTrace = item.toolTrace
                             )
                         }
 
@@ -444,7 +455,8 @@ fun MainScreen(
                         Spacer(modifier = Modifier.height(8.dp))
                     }
 
-                    // Bottom section - hidden during processing
+                    // Bottom section - hidden during processing. Any other non-terminal state
+                    // (Thinking, UsingTool, AwaitingToolConfirmation, …) counts as processing.
                     val isProcessing = currentPipelineState !is SlothSpeakService.PipelineState.Idle &&
                             currentPipelineState !is SlothSpeakService.PipelineState.Complete &&
                             currentPipelineState !is SlothSpeakService.PipelineState.Error &&

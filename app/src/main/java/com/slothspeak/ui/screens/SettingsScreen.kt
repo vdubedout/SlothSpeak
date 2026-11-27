@@ -139,6 +139,24 @@ fun SettingsScreen(
 
             Spacer(modifier = Modifier.height(24.dp))
 
+            // Tools: plugins (Brave Search, HTTP request) for OpenAI-compatible models.
+            ToolsSettingsSection(
+                state = state.tools,
+                onToggleBraveSearch = { viewModel.setBraveSearchEnabled(it) },
+                onSaveBraveApiKey = { viewModel.saveBraveApiKey(it) },
+                onDeleteBraveApiKey = { viewModel.deleteBraveApiKey() },
+                onToggleHttpRequest = { viewModel.setHttpRequestEnabled(it) },
+                onSetHttpWritePolicy = { viewModel.setHttpWritePolicy(it) },
+                onRemoveAllowedWriteHost = { viewModel.removeAllowedWriteHost(it) },
+                onResetAllowedWriteHosts = { viewModel.resetAllowedWriteHosts() },
+                onSaveHostAuthProfile = { host, headerName, headerValue ->
+                    viewModel.saveHostAuthProfile(host, headerName, headerValue)
+                },
+                onDeleteHostAuthProfile = { viewModel.deleteHostAuthProfile(it) }
+            )
+
+            Spacer(modifier = Modifier.height(24.dp))
+
             // Speech-to-Text Section
             SttSettingsSection(
                 providers = state.sttProviders,

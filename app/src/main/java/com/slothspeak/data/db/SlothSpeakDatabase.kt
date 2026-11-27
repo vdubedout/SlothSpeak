@@ -11,7 +11,7 @@ import com.slothspeak.data.db.entities.QAPair
 
 @Database(
     entities = [Conversation::class, QAPair::class],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 abstract class SlothSpeakDatabase : RoomDatabase() {
@@ -47,6 +47,13 @@ abstract class SlothSpeakDatabase : RoomDatabase() {
             }
         }
 
+        /** Adds the persisted tool trace (`ToolTraceEntry` JSON array) of an answer. */
+        internal val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE qa_pairs ADD COLUMN toolCallsJson TEXT DEFAULT NULL")
+            }
+        }
+
         fun getInstance(context: Context): SlothSpeakDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -54,7 +61,7 @@ abstract class SlothSpeakDatabase : RoomDatabase() {
                     SlothSpeakDatabase::class.java,
                     "slothspeak_db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                     .fallbackToDestructiveMigration()
                     .build()
                     .also { INSTANCE = it }
