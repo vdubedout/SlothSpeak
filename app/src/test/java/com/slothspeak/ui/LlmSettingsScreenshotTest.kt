@@ -111,6 +111,7 @@ class LlmSettingsScreenshotTest {
                         onDeleteCompat = {},
                         onSetThinking = { _, _, _ -> },
                         onSetXSearch = {},
+                        onFindSavedKey = { null },
                         onFetchModels = { _, _, _ -> Result.success(emptyList()) }
                     )
                 }

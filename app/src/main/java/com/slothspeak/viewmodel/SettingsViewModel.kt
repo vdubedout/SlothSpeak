@@ -18,6 +18,9 @@ import com.slothspeak.data.HttpWritePolicy
 import com.slothspeak.data.LlmProviderCatalog
 import com.slothspeak.data.LlmProviderType
 import com.slothspeak.data.LlmProviderUiState
+import com.slothspeak.data.SavedApiKeyLookup
+import com.slothspeak.data.SavedKeyTarget
+import com.slothspeak.data.SavedProviderKey
 import com.slothspeak.data.SttProviderUiState
 import com.slothspeak.data.ToolConfigManager
 import com.slothspeak.data.TtsProviderUiState
@@ -175,6 +178,9 @@ class SettingsViewModel @JvmOverloads constructor(
      * Saves a compatible provider together with an optional API key.
      * A blank key keeps the existing key (use provider deletion to remove it).
      * New providers become active immediately.
+     *
+     * A key prefilled by the dialog (re-used from the same endpoint) is stored
+     * under the new provider id here, so it is not lost.
      */
     fun saveCompatProvider(config: CompatibleProviderConfig, apiKey: String?) {
         val isNew = compatibleProviderManager.getProvider(config.id) == null
@@ -186,6 +192,32 @@ class SettingsViewModel @JvmOverloads constructor(
             apiKeyManager.setSelectedCompatProviderId(config.id)
         }
         refreshState()
+    }
+
+    /**
+     * Saved API key to prefill the LLM provider dialog with, so re-using the
+     * same endpoint (a second Z.ai entry, an already configured custom base
+     * URL, …) does not require pasting the key again.
+     *
+     * Returns null when no matching key is stored — the dialog then starts with
+     * an empty key field. The key is only returned to the UI and never logged.
+     */
+    fun findSavedApiKey(target: SavedKeyTarget): String? {
+        val compatKeys = compatibleProviderManager.getProviders().map { config ->
+            SavedProviderKey(
+                providerId = config.id,
+                baseUrl = config.baseUrl,
+                apiKey = compatibleProviderManager.getProviderKey(config.id).orEmpty()
+            )
+        }
+        val builtinKeys = mutableMapOf<String, String>()
+        apiKeyManager.getKey()?.let { builtinKeys[ApiKeyManager.LLM_PROVIDER_OPENAI] = it }
+        apiKeyManager.getGeminiKey()?.let { builtinKeys[ApiKeyManager.LLM_PROVIDER_GEMINI] = it }
+        apiKeyManager.getClaudeKey()?.let { builtinKeys[ApiKeyManager.LLM_PROVIDER_CLAUDE] = it }
+        apiKeyManager.getGrokKey()?.let { builtinKeys[ApiKeyManager.LLM_PROVIDER_GROK] = it }
+        // Together is the only other built-in LLM endpoint we reuse (via its STT key).
+        apiKeyManager.getSttApiKey()?.let { builtinKeys[ApiKeyManager.STT_PROVIDER_TOGETHER] = it }
+        return SavedApiKeyLookup.findSavedKey(target, compatKeys, builtinKeys)
     }
 
     fun deleteCompatProvider(id: String) {
