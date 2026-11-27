@@ -560,7 +560,10 @@ internal fun KeepLatestVisibleOnImeOpen(
             if ((imeGrew || viewportShrankWithImeOpen) && currentItemCount > 0) {
                 // Wait for the current layout/deactivation pass to settle before scrolling.
                 withFrameNanos { }
-                listState.scrollToItem(currentItemCount)
+                val totalItems = listState.layoutInfo.totalItemsCount
+                if (totalItems > 0) {
+                    listState.scrollToItem(currentItemCount.coerceAtMost(totalItems - 1))
+                }
             }
         }
     }

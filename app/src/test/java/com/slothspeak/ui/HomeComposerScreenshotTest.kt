@@ -253,7 +253,7 @@ class HomeComposerScreenshotTest {
 
     @OptIn(ExperimentalMaterial3Api::class)
     @Test
-    fun homeScreen_imeOpen_liftsComposerAndModelPillAboveKeyboard_png() {
+    fun homeScreen_imeOpen_composerAndModelPill_png() {
         val samplePairs = listOf(
             "What is the capital of France?" to
                 "The capital of France is Paris, situated on the Seine river in northern France.",
@@ -405,5 +405,60 @@ class HomeComposerScreenshotTest {
         assertEquals(1, modelPillClicks)
 
         rule.onRoot().captureRoboImage("build/ui-screenshots/homeScreen_imeOpen_composerAndModelPill.png")
+    }
+
+    @Test
+    fun keepLatestVisibleOnImeOpen_clampsIndexWhenListHasFewerItems() {
+        val samplePairs = listOf(
+            "Question 1" to "Answer 1",
+            "Question 2" to "Answer 2",
+            "Question 3" to "Answer 3"
+        )
+        var hostView: View? = null
+        var density: Density? = null
+
+        rule.setContent {
+            hostView = LocalView.current
+            density = LocalDensity.current
+            val listState = rememberLazyListState()
+            // Intentionally pass an itemCount larger than LazyColumn's totalItemsCount (no trailing spacer)
+            KeepLatestVisibleOnImeOpen(listState = listState, itemCount = samplePairs.size + 5)
+
+            SlothSpeakTheme {
+                Surface(modifier = Modifier.fillMaxSize()) {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        items(samplePairs) { (q, a) ->
+                            QAPairCard(
+                                questionText = q,
+                                answerText = a,
+                                timestamp = 1700000000000L,
+                                audioFiles = null,
+                                onReplayClick = null
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        rule.waitForIdle()
+
+        val targetView = requireNotNull(hostView)
+        val imePx = with(requireNotNull(density)) { 300.dp.roundToPx() }
+        val openInsets = WindowInsetsCompat.Builder()
+            .setInsets(WindowInsetsCompat.Type.ime(), Insets.of(0, 0, 0, imePx))
+            .build()
+        rule.runOnUiThread {
+            ViewCompat.dispatchApplyWindowInsets(targetView, openInsets)
+        }
+        rule.waitForIdle()
+
+        // Clamped scroll succeeds without throwing and keeps the last card present
+        rule.onNodeWithText("Question 3").assertExists()
     }
 }
