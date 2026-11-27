@@ -13,11 +13,15 @@ import com.slothspeak.data.CompatibleProviderManager
 import com.slothspeak.data.FutoSttLanguage
 import com.slothspeak.data.FutoSttModel
 import com.slothspeak.data.FutoSttModelManager
+import com.slothspeak.data.HostAuthProfile
+import com.slothspeak.data.HttpWritePolicy
 import com.slothspeak.data.LlmProviderCatalog
 import com.slothspeak.data.LlmProviderType
 import com.slothspeak.data.LlmProviderUiState
 import com.slothspeak.data.SttProviderUiState
+import com.slothspeak.data.ToolConfigManager
 import com.slothspeak.data.TtsProviderUiState
+import com.slothspeak.data.ToolsSettingsState
 import com.slothspeak.data.db.SlothSpeakDatabase
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -28,8 +32,13 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.UUID
 
-class SettingsViewModel(application: Application) : AndroidViewModel(application) {
+class SettingsViewModel @JvmOverloads constructor(
+    application: Application,
+    /** Injectable seam so the Tools settings can be unit-tested without the Android Keystore. */
+    private val toolConfigManager: ToolConfigManager = ToolConfigManager(application)
+) : AndroidViewModel(application) {
 
     private val apiKeyManager = ApiKeyManager(application)
     private val compatibleProviderManager = CompatibleProviderManager(application)
@@ -87,7 +96,9 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         val ttsBaseUrl: String = "https://api.openai.com/v1/",
         val hasTtsCustomApiKey: Boolean = false,
         val ttsKeySaved: Boolean = false,
-        val ttsProviders: List<TtsProviderUiState> = emptyList()
+        val ttsProviders: List<TtsProviderUiState> = emptyList(),
+        // Tools (plugins for OpenAI-compatible models)
+        val tools: ToolsSettingsState = ToolsSettingsState()
     )
 
     init {
@@ -102,6 +113,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             val llmProviders = buildLlmProviders()
             val sttProviders = buildSttProviders()
             val ttsProviders = buildTtsProviders()
+            val tools = withContext(Dispatchers.IO) { toolConfigManager.snapshot() }
             _state.value = _state.value.copy(
                 selectedModel = apiKeyManager.getSelectedModel(),
                 reasoningEffort = apiKeyManager.getReasoningEffort(),
@@ -143,7 +155,8 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                 ttsVoice = apiKeyManager.getTtsVoice(),
                 ttsBaseUrl = apiKeyManager.getTtsBaseUrl(),
                 hasTtsCustomApiKey = apiKeyManager.getTtsCustomApiKey() != null,
-                ttsKeySaved = false
+                ttsKeySaved = false,
+                tools = tools
             )
         }
     }
@@ -824,6 +837,70 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             sttProviders = buildSttProviders(),
             ttsProviders = buildTtsProviders()
         )
+    }
+
+    // ============================================================
+    // Tools (plugins for OpenAI-compatible models)
+    // ============================================================
+
+    private fun refreshTools() {
+        _state.value = _state.value.copy(tools = toolConfigManager.snapshot())
+    }
+
+    fun setBraveSearchEnabled(enabled: Boolean) {
+        toolConfigManager.setPluginEnabled(ToolConfigManager.PLUGIN_BRAVE_SEARCH, enabled)
+        refreshTools()
+    }
+
+    /** Stores the Brave Search API key encrypted; blank keys are ignored. */
+    fun saveBraveApiKey(key: String) {
+        if (key.isBlank()) return
+        toolConfigManager.saveBraveApiKey(key)
+        refreshTools()
+    }
+
+    fun deleteBraveApiKey() {
+        toolConfigManager.deleteBraveApiKey()
+        refreshTools()
+    }
+
+    fun setHttpRequestEnabled(enabled: Boolean) {
+        toolConfigManager.setPluginEnabled(ToolConfigManager.PLUGIN_HTTP_REQUEST, enabled)
+        refreshTools()
+    }
+
+    fun setHttpWritePolicy(policy: HttpWritePolicy) {
+        toolConfigManager.setHttpWritePolicy(policy)
+        refreshTools()
+    }
+
+    fun removeAllowedWriteHost(host: String) {
+        toolConfigManager.removeAllowedWriteHost(host)
+        refreshTools()
+    }
+
+    fun resetAllowedWriteHosts() {
+        toolConfigManager.clearAllowedWriteHosts()
+        refreshTools()
+    }
+
+    /** Adds a host auth profile; the header value goes to EncryptedSharedPreferences. */
+    fun saveHostAuthProfile(host: String, headerName: String, headerValue: String) {
+        if (host.isBlank() || headerName.isBlank() || headerValue.isBlank()) return
+        toolConfigManager.saveHostAuthProfile(
+            HostAuthProfile(
+                id = UUID.randomUUID().toString(),
+                host = host.trim(),
+                headerName = headerName.trim(),
+                headerValue = headerValue
+            )
+        )
+        refreshTools()
+    }
+
+    fun deleteHostAuthProfile(id: String) {
+        toolConfigManager.deleteHostAuthProfile(id)
+        refreshTools()
     }
 
     private fun calculateAudioStorageSize(): Long {

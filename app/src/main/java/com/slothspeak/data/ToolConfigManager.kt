@@ -11,6 +11,19 @@ import org.json.JSONObject
 enum class HttpWritePolicy { ASK, ALWAYS_ALLOW }
 
 /**
+ * Immutable snapshot of Settings → Tools, built from [ToolConfigManager.snapshot].
+ * The profiles carry their secret header values, which the UI must never render.
+ */
+data class ToolsSettingsState(
+    val braveSearchEnabled: Boolean = false,
+    val braveApiKeyConfigured: Boolean = false,
+    val httpRequestEnabled: Boolean = false,
+    val httpWritePolicy: HttpWritePolicy = HttpWritePolicy.ASK,
+    val allowedWriteHosts: List<String> = emptyList(),
+    /** Saved credentials; [HostAuthProfile.headerValue] is a secret and must never be rendered. */
+    val hostAuthProfiles: List<HostAuthProfile> = emptyList()
+)
+/**
  * Per-host authentication header (e.g. `Authorization: Bearer ...`) attached by the HTTP
  * request plugin. [headerValue] is a secret and lives in EncryptedSharedPreferences.
  */
@@ -38,6 +51,16 @@ class ToolConfigManager internal constructor(
     constructor(context: Context) : this(
         configPrefs = context.getSharedPreferences(PREFS_CONFIG, Context.MODE_PRIVATE),
         securePrefs = createSecurePrefs(context)
+    )
+
+    /** Current settings for the Tools section of Settings. */
+    fun snapshot(): ToolsSettingsState = ToolsSettingsState(
+        braveSearchEnabled = isPluginEnabled(PLUGIN_BRAVE_SEARCH),
+        braveApiKeyConfigured = hasBraveApiKey(),
+        httpRequestEnabled = isPluginEnabled(PLUGIN_HTTP_REQUEST),
+        httpWritePolicy = getHttpWritePolicy(),
+        allowedWriteHosts = getAllowedWriteHosts().toList(),
+        hostAuthProfiles = getHostAuthProfiles()
     )
 
     // --- Plugin toggles ---
