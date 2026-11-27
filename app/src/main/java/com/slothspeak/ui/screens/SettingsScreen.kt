@@ -132,6 +132,7 @@ fun SettingsScreen(
                     viewModel.setLlmThinking(provider, enabled, level)
                 },
                 onSetXSearch = { viewModel.setXSearchEnabled(it) },
+                onFindSavedKey = { target -> viewModel.findSavedApiKey(target) },
                 onFetchModels = { baseUrl, providerId, apiKey ->
                     viewModel.fetchCompatModels(baseUrl, providerId, apiKey)
                 }
@@ -145,6 +146,7 @@ fun SettingsScreen(
                 onToggleBraveSearch = { viewModel.setBraveSearchEnabled(it) },
                 onSaveBraveApiKey = { viewModel.saveBraveApiKey(it) },
                 onDeleteBraveApiKey = { viewModel.deleteBraveApiKey() },
+                onSetBraveMinIntervalMs = { viewModel.setBraveMinIntervalMs(it) },
                 onToggleHttpRequest = { viewModel.setHttpRequestEnabled(it) },
                 onSetHttpWritePolicy = { viewModel.setHttpWritePolicy(it) },
                 onRemoveAllowedWriteHost = { viewModel.removeAllowedWriteHost(it) },

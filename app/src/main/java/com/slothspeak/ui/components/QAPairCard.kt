@@ -408,6 +408,20 @@ private fun formatTimestampWithOrdinal(timestamp: Long): String {
 
 private fun formatModelDisplay(model: String, reasoningEffort: String?): String {
     val displayName = when (model) {
+        "gpt-6.2-astra" -> "GPT 6.2 Astra"
+        "gpt-6.2-sol" -> "GPT 6.2 Sol"
+        "gpt-6.1-terra" -> "GPT 6.1 Terra"
+        "gpt-6-luna" -> "GPT 6 Luna"
+        "gemini-4-carbon" -> "Gemini 4 Carbon"
+        "gemini-4-neon" -> "Gemini 4 Neon"
+        "gemini-4-hydrogen" -> "Gemini 4 Hydrogen"
+        "gemini-4-argon" -> "Gemini 4 Argon"
+        "claude-fable-5-2" -> "Claude Fable 5.2"
+        "claude-opus-5-5" -> "Claude Opus 5.5"
+        "claude-sonnet-5-5" -> "Claude Sonnet 5.5"
+        "claude-haiku-5-5" -> "Claude Haiku 5.5"
+        "grok-4.7" -> "Grok 4.7"
+        // Historical rows keep their original labels.
         "gpt-5.5-pro" -> "GPT 5.5 Pro"
         "gpt-5.5" -> "GPT 5.5"
         "gemini-3.1-pro-preview" -> "Gemini 3.1 Pro"

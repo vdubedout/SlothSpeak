@@ -63,7 +63,7 @@ class HomeComposerScreenshotTest {
         key = "builtin:openai",
         type = LlmProviderType.OPENAI,
         displayName = "OpenAI",
-        modelId = ApiKeyManager.MODEL_PRO,
+        modelId = ApiKeyManager.MODEL_ASTRA,
         active = true,
         thinkingEnabled = true,
         thinkingLevel = ApiKeyManager.EFFORT_HIGH,
@@ -133,7 +133,7 @@ class HomeComposerScreenshotTest {
         rule.onNodeWithContentDescription("Voice chat").assertExists()
         rule.onNodeWithContentDescription("Send").assertExists()
         // Model pill rendered directly below the composer row
-        rule.onNodeWithText("GPT-5.5 Pro").assertExists()
+        rule.onNodeWithText("GPT-6.2 Astra").assertExists()
         rule.onNodeWithContentDescription("Switch model").assertExists()
 
         rule.onRoot().captureRoboImage("build/ui-screenshots/homeComposer_withModelPillBelow.png")
@@ -158,11 +158,11 @@ class HomeComposerScreenshotTest {
         rule.onNodeWithText("OpenAI").assertExists()
         rule.onNodeWithText("Claude").assertExists()
         rule.onNodeWithText("DeepSeek").assertExists()
-        rule.onNodeWithText("GPT-5.5 Pro").assertExists()
-        rule.onNodeWithText("Claude Opus 4.8").assertExists()
+        rule.onNodeWithText("GPT-6.2 Astra").assertExists()
+        rule.onNodeWithText("Claude Opus 5.5").assertExists()
         rule.onNodeWithText("deepseek-v4-flash").assertExists()
-        rule.onNodeWithText("GPT-5.5").assertDoesNotExist()
-        rule.onNodeWithText("o3 Deep Research").assertDoesNotExist()
+        rule.onNodeWithText("GPT-6.2 Sol").assertDoesNotExist()
+        rule.onNodeWithText("GPT-6.1 Terra").assertDoesNotExist()
 
         rule.onRoot().captureRoboImage("build/ui-screenshots/modelSwitcher_folded.png")
     }
@@ -188,11 +188,11 @@ class HomeComposerScreenshotTest {
 
         // Specific model rows become visible (GPT-5.5 Pro appears both in the
         // header subtitle and as a model row, so match the unique ones exactly)
-        rule.onNodeWithText("GPT-5.5").assertExists()
-        rule.onNodeWithText("o3 Deep Research").assertExists()
+        rule.onNodeWithText("GPT-6.2 Sol").assertExists()
+        rule.onNodeWithText("GPT-6.1 Terra").assertExists()
         assertTrue(
             "expected header subtitle + model row",
-            rule.onAllNodesWithText("GPT-5.5 Pro").fetchSemanticsNodes().size >= 2
+            rule.onAllNodesWithText("GPT-6.2 Astra").fetchSemanticsNodes().size >= 2
         )
 
         rule.onRoot().captureRoboImage("build/ui-screenshots/modelSwitcher_expanded.png")

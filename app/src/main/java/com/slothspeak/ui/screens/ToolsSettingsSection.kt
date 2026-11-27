@@ -47,6 +47,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.slothspeak.data.HostAuthProfile
 import com.slothspeak.data.HttpWritePolicy
+import com.slothspeak.data.ToolConfigManager
 import com.slothspeak.data.ToolsSettingsState
 import com.slothspeak.ui.theme.AccentGreen
 import com.slothspeak.ui.theme.ErrorRed
@@ -65,6 +66,7 @@ fun ToolsSettingsSection(
     onToggleBraveSearch: (Boolean) -> Unit,
     onSaveBraveApiKey: (String) -> Unit,
     onDeleteBraveApiKey: () -> Unit,
+    onSetBraveMinIntervalMs: (Int) -> Unit,
     onToggleHttpRequest: (Boolean) -> Unit,
     onSetHttpWritePolicy: (HttpWritePolicy) -> Unit,
     onRemoveAllowedWriteHost: (String) -> Unit,
@@ -128,6 +130,11 @@ fun ToolsSettingsSection(
                     }
                 }
             }
+            Spacer(modifier = Modifier.height(12.dp))
+            BraveMinIntervalField(
+                intervalMs = state.braveMinIntervalMs,
+                onSetIntervalMs = onSetBraveMinIntervalMs
+            )
         }
     }
 
@@ -402,6 +409,39 @@ private fun BraveApiKeyDialog(
 }
 
 @Composable
+private fun BraveMinIntervalField(
+    intervalMs: Int,
+    onSetIntervalMs: (Int) -> Unit
+) {
+    var text by remember(intervalMs) { mutableStateOf(intervalMs.toString()) }
+
+    OutlinedTextField(
+        value = text,
+        onValueChange = { raw ->
+            // Digits only; the stored value is clamped by ToolConfigManager.
+            val digits = raw.filter { it.isDigit() }.take(MAX_INTERVAL_DIGITS)
+            text = digits
+            digits.toIntOrNull()?.let(onSetIntervalMs)
+        },
+        label = { Text("Delay between Brave searches (ms)") },
+        supportingText = {
+            Text(
+                "${ToolConfigManager.MIN_BRAVE_MIN_INTERVAL_MS}–" +
+                    "${ToolConfigManager.MAX_BRAVE_MIN_INTERVAL_MS} ms. " +
+                    "Default ${ToolConfigManager.DEFAULT_BRAVE_MIN_INTERVAL_MS} ms " +
+                    "(Brave's free plan allows one search per second).",
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary
+            )
+        },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        modifier = Modifier.fillMaxWidth(),
+        colors = toolsFieldColors()
+    )
+}
+
+@Composable
 private fun HostAuthProfileDialog(
     onDismiss: () -> Unit,
     onSave: (host: String, headerName: String, headerValue: String) -> Unit
@@ -478,3 +518,6 @@ private fun toolsFieldColors() = OutlinedTextFieldDefaults.colors(
     cursorColor = AccentGreen,
     focusedLabelColor = AccentGreen
 )
+
+/** Keeps the interval field small: 10000 is the maximum, so 5 digits suffice. */
+private const val MAX_INTERVAL_DIGITS = 5

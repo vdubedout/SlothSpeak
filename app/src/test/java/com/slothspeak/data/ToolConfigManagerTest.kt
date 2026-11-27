@@ -115,6 +115,52 @@ class ToolConfigManagerTest {
         assertEquals("second", manager.getBraveApiKey())
     }
 
+    // --- Brave request spacing ---
+
+    @Test
+    fun braveMinIntervalMs_defaultsTo1000() {
+        assertEquals(ToolConfigManager.DEFAULT_BRAVE_MIN_INTERVAL_MS, manager.getBraveMinIntervalMs())
+        assertEquals(1000, manager.getBraveMinIntervalMs())
+    }
+
+    @Test
+    fun braveMinIntervalMs_roundTrip() {
+        manager.setBraveMinIntervalMs(2500)
+
+        assertEquals(2500, manager.getBraveMinIntervalMs())
+        assertEquals(2500, configPrefs.getInt("brave_min_interval_ms", -1))
+    }
+
+    @Test
+    fun braveMinIntervalMs_isClampedTo0Through10000() {
+        manager.setBraveMinIntervalMs(-500)
+        assertEquals(0, manager.getBraveMinIntervalMs())
+
+        manager.setBraveMinIntervalMs(999_999)
+        assertEquals(10000, manager.getBraveMinIntervalMs())
+    }
+
+    @Test
+    fun braveMinIntervalMs_storedOutOfRangeValueIsClampedOnRead() {
+        configPrefs.edit().putInt("brave_min_interval_ms", 42_000).commit()
+
+        assertEquals(10000, manager.getBraveMinIntervalMs())
+    }
+
+    @Test
+    fun snapshot_includesBraveMinIntervalMs() {
+        manager.setBraveMinIntervalMs(1500)
+
+        val snapshot = manager.snapshot()
+
+        assertEquals(1500, snapshot.braveMinIntervalMs)
+        // Defaults for an untouched snapshot
+        assertEquals(
+            ToolConfigManager.DEFAULT_BRAVE_MIN_INTERVAL_MS,
+            ToolsSettingsState().braveMinIntervalMs
+        )
+    }
+
     // --- HTTP write policy ---
 
     @Test

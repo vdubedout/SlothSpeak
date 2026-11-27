@@ -58,6 +58,7 @@ import com.slothspeak.data.CompatibleProviderConfig
 import com.slothspeak.data.LlmProviderCatalog
 import com.slothspeak.data.LlmProviderType
 import com.slothspeak.data.LlmProviderUiState
+import com.slothspeak.data.SavedKeyTarget
 import com.slothspeak.ui.theme.AccentGreen
 import com.slothspeak.ui.theme.ErrorRed
 import com.slothspeak.ui.theme.TextSecondary
@@ -81,6 +82,7 @@ fun LlmSettingsSection(
     onDeleteCompat: (String) -> Unit,
     onSetThinking: (LlmProviderUiState, Boolean, String) -> Unit,
     onSetXSearch: (Boolean) -> Unit,
+    onFindSavedKey: (SavedKeyTarget) -> String?,
     onFetchModels: suspend (String, String?, String?) -> Result<List<String>>
 ) {
     var showProviderDialog by remember { mutableStateOf(false) }
@@ -161,7 +163,7 @@ fun LlmSettingsSection(
         Text("Add model")
     }
 
-    if (selectedModel == ApiKeyManager.MODEL_GROK) {
+    if (ApiKeyManager.isGrokModel(selectedModel)) {
         Spacer(modifier = Modifier.height(24.dp))
         SearchSettings(
             xSearchEnabled = xSearchEnabled,
@@ -193,7 +195,8 @@ fun LlmSettingsSection(
                 editingProvider = null
                 selectedTemplate = null
             },
-            onFetchModels = onFetchModels
+            onFetchModels = onFetchModels,
+            onFindSavedKey = onFindSavedKey
         )
     }
 
@@ -571,7 +574,7 @@ private val llmTemplates = listOf(
         type = LlmProviderType.OPENAI,
         providerKey = ApiKeyManager.LLM_PROVIDER_OPENAI,
         displayName = "OpenAI",
-        defaultModel = ApiKeyManager.MODEL_STANDARD,
+        defaultModel = ApiKeyManager.MODEL_ASTRA,
         keyPlaceholder = "sk-…"
     ),
     LlmTemplate(
@@ -580,7 +583,7 @@ private val llmTemplates = listOf(
         type = LlmProviderType.GEMINI,
         providerKey = ApiKeyManager.LLM_PROVIDER_GEMINI,
         displayName = "Gemini",
-        defaultModel = ApiKeyManager.MODEL_GEMINI_PRO,
+        defaultModel = ApiKeyManager.MODEL_GEMINI_CARBON,
         keyPlaceholder = "AIza…"
     ),
     LlmTemplate(
@@ -654,6 +657,7 @@ private fun LlmProviderDialog(
     onDismiss: () -> Unit,
     onSaveBuiltin: (LlmProviderType, String?, String, Boolean) -> Unit,
     onSaveCompat: (CompatibleProviderConfig, String?) -> Unit,
+    onFindSavedKey: (SavedKeyTarget) -> String?,
     onFetchModels: suspend (String, String?, String?) -> Result<List<String>>
 ) {
     if (provider == null && template == null) {
@@ -711,6 +715,7 @@ private fun LlmProviderDialog(
         null
     }
     val effectiveProvider = provider ?: builtinExisting
+    val isCompat = resolvedTemplate.type == LlmProviderType.COMPAT
 
     val seed = remember(effectiveProvider?.key, resolvedTemplate.id) {
         LlmFormSeed(
@@ -734,7 +739,20 @@ private fun LlmProviderDialog(
     var displayName by remember(seed) { mutableStateOf(seed.displayName) }
     var modelId by remember(seed) { mutableStateOf(seed.modelId) }
     var baseUrl by remember(seed) { mutableStateOf(seed.baseUrl) }
-    var apiKey by remember(seed) { mutableStateOf("") }
+
+    // Prefill a key that is already saved for this provider or for the same endpoint
+    // (e.g. a second Z.ai entry, or a custom URL that is already configured).
+    fun savedKeyTarget(url: String): SavedKeyTarget = SavedKeyTarget(
+        baseUrl = url,
+        compatProviderId = if (isCompat) provider?.compatProviderId else null,
+        builtinProviderKey = if (!isCompat) effectiveProvider?.let { resolvedTemplate.providerKey } else null
+    )
+
+    var apiKey by remember(seed) {
+        mutableStateOf(onFindSavedKey(savedKeyTarget(seed.baseUrl)).orEmpty())
+    }
+    // Once the user types in the key field, changing the base URL must not overwrite it.
+    var apiKeyEdited by remember(seed) { mutableStateOf(false) }
     var thinkingEnabled by remember(seed) { mutableStateOf(seed.thinkingEnabled) }
     var reasoningEffort by remember(seed) { mutableStateOf(seed.reasoningEffort) }
     var sendThinkingParams by remember(seed) { mutableStateOf(seed.sendThinkingParams) }
@@ -745,7 +763,6 @@ private fun LlmProviderDialog(
     var fetchingModels by remember(seed) { mutableStateOf(false) }
     var fetchError by remember(seed) { mutableStateOf<String?>(null) }
 
-    val isCompat = resolvedTemplate.type == LlmProviderType.COMPAT
     val isBuiltinAdd = !isCompat && effectiveProvider == null
     val requiresKey = isBuiltinAdd
     val canSave = displayName.isNotBlank() &&
@@ -784,7 +801,12 @@ private fun LlmProviderDialog(
                 if (isCompat) {
                     OutlinedTextField(
                         value = baseUrl,
-                        onValueChange = { baseUrl = it },
+                        onValueChange = { newUrl ->
+                            baseUrl = newUrl
+                            if (!apiKeyEdited) {
+                                apiKey = onFindSavedKey(savedKeyTarget(newUrl)).orEmpty()
+                            }
+                        },
                         label = { Text("Base URL (include /v1/)") },
                         placeholder = { Text("https://api.example.com/v1/") },
                         singleLine = true,
@@ -906,7 +928,10 @@ private fun LlmProviderDialog(
 
                 OutlinedTextField(
                     value = apiKey,
-                    onValueChange = { apiKey = it },
+                    onValueChange = {
+                        apiKeyEdited = true
+                        apiKey = it
+                    },
                     label = {
                         Text(
                             if (effectiveProvider != null) "Replace API key (optional)"
