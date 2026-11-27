@@ -62,6 +62,7 @@ fun StatusIndicator(
     pipelineState: SlothSpeakService.PipelineState,
     onRetry: () -> Unit,
     onCancel: () -> Unit,
+    onDismissError: () -> Unit = {},
     onStop: () -> Unit = {},
     onRestartPlayback: () -> Unit = {},
     onRewind20s: () -> Unit = {},
@@ -342,16 +343,30 @@ fun StatusIndicator(
                             style = MaterialTheme.typography.bodyMedium,
                             color = ErrorRed
                         )
-                        if (pipelineState.isRetryable) {
-                            TextButton(onClick = onRetry) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            if (pipelineState.isRetryable) {
+                                TextButton(onClick = onRetry) {
+                                    Icon(
+                                        Icons.Default.Refresh,
+                                        contentDescription = null,
+                                        tint = AccentGreen,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Retry", color = AccentGreen)
+                                }
+                            }
+                            TextButton(onClick = onDismissError) {
                                 Icon(
-                                    Icons.Default.Refresh,
+                                    Icons.Default.Cancel,
                                     contentDescription = null,
-                                    tint = AccentGreen,
+                                    tint = ErrorRed,
                                     modifier = Modifier.size(18.dp)
                                 )
                                 Spacer(modifier = Modifier.width(4.dp))
-                                Text("Retry", color = AccentGreen)
+                                Text("Cancel", color = ErrorRed)
                             }
                         }
                     }

@@ -2,13 +2,14 @@ package com.slothspeak.util
 
 object TextChunker {
 
-    private const val MAX_CHUNK_SIZE = 4096
+    const val DEFAULT_MAX_CHUNK_SIZE = 4096
     private const val MIN_SEARCH_RANGE = 500
 
     private val SENTENCE_ENDINGS = setOf('.', '!', '?')
 
-    fun chunkText(text: String): List<String> {
-        if (text.length <= MAX_CHUNK_SIZE) {
+    fun chunkText(text: String, maxChunkSize: Int = DEFAULT_MAX_CHUNK_SIZE): List<String> {
+        require(maxChunkSize > 0) { "maxChunkSize must be positive, was $maxChunkSize" }
+        if (text.length <= maxChunkSize) {
             return listOf(text)
         }
 
@@ -16,12 +17,12 @@ object TextChunker {
         var remaining = text
 
         while (remaining.isNotEmpty()) {
-            if (remaining.length <= MAX_CHUNK_SIZE) {
+            if (remaining.length <= maxChunkSize) {
                 chunks.add(remaining)
                 break
             }
 
-            val boundary = findSplitPoint(remaining, MAX_CHUNK_SIZE)
+            val boundary = findSplitPoint(remaining, maxChunkSize)
             chunks.add(remaining.substring(0, boundary).trimEnd())
             remaining = remaining.substring(boundary).trimStart()
         }
@@ -38,17 +39,16 @@ object TextChunker {
     }
 
     private fun findSplitPoint(text: String, maxLength: Int): Int {
+        val effectiveMax = maxLength.coerceAtMost(text.length)
         // Search backward from the max length for a sentence boundary
-        val searchStart = (maxLength - MIN_SEARCH_RANGE).coerceAtLeast(0)
+        val searchStart = (effectiveMax - MIN_SEARCH_RANGE).coerceAtLeast(0)
 
-        for (i in maxLength - 1 downTo searchStart) {
-            if (i >= text.length) continue
-
+        for (i in effectiveMax - 1 downTo searchStart) {
             val char = text[i]
             if (char in SENTENCE_ENDINGS) {
-                // Check for closing quotes after the punctuation
+                // Check for closing quotes after the punctuation without exceeding effectiveMax
                 val nextIdx = i + 1
-                if (nextIdx < text.length && text[nextIdx] == '"') {
+                if (nextIdx < text.length && text[nextIdx] == '"' && nextIdx + 1 <= effectiveMax) {
                     return nextIdx + 1
                 }
                 return nextIdx
@@ -56,14 +56,13 @@ object TextChunker {
         }
 
         // No sentence boundary found - fall back to last space
-        for (i in maxLength - 1 downTo searchStart) {
-            if (i >= text.length) continue
+        for (i in effectiveMax - 1 downTo searchStart) {
             if (text[i] == ' ') {
                 return i + 1
             }
         }
 
         // No space found either - hard cut at max length
-        return maxLength
+        return effectiveMax.coerceAtLeast(1)
     }
 }

@@ -437,15 +437,20 @@ fun MainScreen(
                         }
                     }
 
-                    // Pipeline status — show for active pipeline processing or any playback (incl. replay)
+                    // Pipeline status — show for active pipeline processing, any playback (incl. replay),
+                    // or on-demand read-aloud synthesis/error
                     val showStatusIndicator = currentPipelineState !is SlothSpeakService.PipelineState.Idle &&
                         currentPipelineState !is SlothSpeakService.PipelineState.Complete &&
-                        (isViewingActivePipeline || currentPipelineState is SlothSpeakService.PipelineState.Playing)
+                        (isViewingActivePipeline ||
+                            currentPipelineState is SlothSpeakService.PipelineState.Playing ||
+                            (currentPipelineState as? SlothSpeakService.PipelineState.GeneratingAudio)?.fromReadAloud == true ||
+                            (currentPipelineState as? SlothSpeakService.PipelineState.Error)?.fromReadAloud == true)
                     if (showStatusIndicator) {
                         StatusIndicator(
                             pipelineState = currentPipelineState,
                             onRetry = { viewModel.retryFromError() },
                             onCancel = { viewModel.requestCancelPipeline() },
+                            onDismissError = { viewModel.dismissError() },
                             onStop = { viewModel.stopPlayback() },
                             onRestartPlayback = { viewModel.restartPlayback() },
                             onRewind20s = { viewModel.seekRelative(-20_000) },
