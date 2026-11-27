@@ -130,7 +130,8 @@ class ToolsUiScreenshotTest {
                         onRemoveAllowedWriteHost = {},
                         onResetAllowedWriteHosts = {},
                         onSaveHostAuthProfile = { _, _, _ -> },
-                        onDeleteHostAuthProfile = {}
+                        onDeleteHostAuthProfile = {},
+                        onSetMaxToolCalls = {}
                     )
                 }
             }
@@ -168,6 +169,12 @@ class ToolsUiScreenshotTest {
 
         // The secret header value is never rendered anywhere
         rule.onAllNodesWithText("Bearer this-secret", substring = true).assertCountEquals(0)
+
+        // Tool usage: per-prompt tool-call budget, digits only
+        rule.onNodeWithText("Tool usage").assertExists()
+        rule.onNodeWithText("Max tool calls per prompt").assertExists()
+        rule.onNodeWithText("15").assertExists()
+        rule.onNodeWithText("Default 15 · 1–50").assertExists()
 
         rule.onRoot().captureRoboImage("build/ui-screenshots/toolsSettings_configured.png")
     }

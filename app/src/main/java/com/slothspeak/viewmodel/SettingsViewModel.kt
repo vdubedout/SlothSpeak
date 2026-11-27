@@ -874,6 +874,12 @@ class SettingsViewModel @JvmOverloads constructor(
         refreshTools()
     }
 
+    /** Persists the per-prompt tool-call budget; [ToolConfigManager] clamps it to 1..50. */
+    fun setMaxToolCalls(value: Int) {
+        toolConfigManager.setMaxToolCalls(value)
+        refreshTools()
+    }
+
     fun removeAllowedWriteHost(host: String) {
         toolConfigManager.removeAllowedWriteHost(host)
         refreshTools()

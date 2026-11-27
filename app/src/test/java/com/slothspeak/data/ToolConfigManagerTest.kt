@@ -138,6 +138,66 @@ class ToolConfigManagerTest {
         assertEquals(HttpWritePolicy.ASK, manager.getHttpWritePolicy())
     }
 
+    // --- Max tool calls per prompt (issue #13) ---
+
+    @Test
+    fun maxToolCalls_defaultsTo15() {
+        assertEquals(15, manager.getMaxToolCalls())
+        assertEquals(15, ToolConfigManager.DEFAULT_MAX_TOOL_CALLS)
+        assertEquals(15, manager.snapshot().maxToolCalls)
+    }
+
+    @Test
+    fun maxToolCalls_roundTrip() {
+        manager.setMaxToolCalls(7)
+        assertEquals(7, manager.getMaxToolCalls())
+        assertEquals(7, manager.snapshot().maxToolCalls)
+
+        manager.setMaxToolCalls(50)
+        assertEquals(50, manager.getMaxToolCalls())
+
+        manager.setMaxToolCalls(1)
+        assertEquals(1, manager.getMaxToolCalls())
+    }
+
+    @Test
+    fun maxToolCalls_isClampedTo1To50() {
+        manager.setMaxToolCalls(0)
+        assertEquals(1, manager.getMaxToolCalls())
+
+        manager.setMaxToolCalls(-12)
+        assertEquals(1, manager.getMaxToolCalls())
+
+        manager.setMaxToolCalls(999)
+        assertEquals(50, manager.getMaxToolCalls())
+
+        manager.setMaxToolCalls(51)
+        assertEquals(50, manager.getMaxToolCalls())
+    }
+
+    @Test
+    fun maxToolCalls_persistedInConfigPrefsNotSecurePrefs() {
+        manager.setMaxToolCalls(23)
+
+        assertEquals(23, configPrefs.getInt("max_tool_calls", 0))
+        assertTrue(securePrefs.all.isEmpty())
+
+        // A fresh manager over the same prefs reads it back.
+        assertEquals(23, ToolConfigManager(configPrefs, securePrefs).getMaxToolCalls())
+    }
+
+    @Test
+    fun maxToolCalls_outOfRangeOrCorruptStoredValueFallsBackSafely() {
+        configPrefs.edit().putInt("max_tool_calls", 0).commit()
+        assertEquals(1, manager.getMaxToolCalls())
+
+        configPrefs.edit().putInt("max_tool_calls", 1_000).commit()
+        assertEquals(50, manager.getMaxToolCalls())
+
+        configPrefs.edit().putString("max_tool_calls", "fifteen").commit()
+        assertEquals(15, manager.getMaxToolCalls())
+    }
+
     // --- Allowed write hosts ---
 
     @Test

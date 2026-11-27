@@ -469,10 +469,11 @@ class SlothSpeakService : Service() {
             )
         }
 
-        Log.d(TAG, "Running agent harness with tools: ${toolRegistry.activeTools().joinToString { it.name }}")
+        Log.d(TAG, "Running agent harness with tools: ${toolRegistry.activeTools().joinToString { it.name }} (max ${toolConfigManager.getMaxToolCalls()} calls)")
         val result = AgentHarness(
             OpenAiCompatibleChatAdapter(openAiCompatibleClient, compatProvider),
-            toolRegistry
+            toolRegistry,
+            maxToolCalls = toolConfigManager.getMaxToolCalls()
         ).run(
             question = questionText,
             history = history,

@@ -368,16 +368,49 @@ class AgentHarnessTest {
         assertSame(handler, recording.seen)
     }
 
-    // --- maxSteps exhaustion ---
+    // --- Tool-call budget exhaustion (issue #13) ---
+
+    /** Adapter that keeps requesting one `web_search` per step while tools are offered. */
+    private fun oneCallPerStepAdapter() = ScriptedAdapter { index, tools ->
+        if (tools.isNotEmpty()) toolStep(call("web_search", "call_$index"), id = "resp-$index")
+        else textStep("Final synthesis.", id = "resp-final")
+    }
 
     @Test
-    fun run_maxStepsExhausted_finalStepDropsToolsAndReturnsSynthesis() = runBlocking {
+    fun run_defaultBudget_is15ToolCalls() = runBlocking {
         val plugin = defaultPlugin()
-        val adapter = ScriptedAdapter { index, tools ->
-            if (tools.isNotEmpty()) toolStep(call("web_search", "call_$index"), id = "resp-$index")
-            else textStep("Final synthesis.", id = "resp-final")
-        }
-        val harness = AgentHarness(adapter, ToolRegistry(listOf(plugin)), maxSteps = 3)
+        val adapter = oneCallPerStepAdapter()
+        val harness = AgentHarness(adapter, ToolRegistry(listOf(plugin)))
+
+        val result = harness.run(QUESTION, emptyList(), SYSTEM_PROMPT)
+
+        assertEquals(AgentHarness.DEFAULT_MAX_TOOL_CALLS, 15)
+        // 15 tool rounds + 1 text-only synthesis.
+        assertEquals(16, adapter.recorded.size)
+        assertEquals(15, plugin.executed.size)
+        assertEquals(15, result.toolTrace.size)
+        assertEquals("Final synthesis.", result.answerText)
+    }
+
+    @Test
+    fun run_configurableBudget_executesExactlyNCalls() = runBlocking {
+        val plugin = defaultPlugin()
+        val adapter = oneCallPerStepAdapter()
+        val harness = AgentHarness(adapter, ToolRegistry(listOf(plugin)), maxToolCalls = 5)
+
+        val result = harness.run(QUESTION, emptyList(), SYSTEM_PROMPT)
+
+        assertEquals(5, plugin.executed.size)
+        assertEquals((0 until 5).map { "call_$it" }, plugin.executed.map { it.id })
+        assertEquals(5, result.toolTrace.size)
+        assertEquals(6, adapter.recorded.size)
+    }
+
+    @Test
+    fun run_budgetExhausted_finalStepDropsToolsAndReturnsSynthesis() = runBlocking {
+        val plugin = defaultPlugin()
+        val adapter = oneCallPerStepAdapter()
+        val harness = AgentHarness(adapter, ToolRegistry(listOf(plugin)), maxToolCalls = 3)
 
         val result = harness.run(QUESTION, emptyList(), SYSTEM_PROMPT)
 
@@ -390,35 +423,166 @@ class AgentHarnessTest {
         assertEquals(3, result.toolTrace.size)
         assertEquals("Final synthesis.", result.answerText)
         assertEquals("resp-final", result.responseId)
-        // The final step sees all three exchanges.
-        assertEquals(1 + 1 + 2 * 3, adapter.recorded[3].messages.size)
+        // The final step sees all three exchanges plus the last-call notice.
+        assertEquals(1 + 1 + 2 * 3 + 1, adapter.recorded[3].messages.size)
     }
 
     @Test
-    fun run_maxStepsExhausted_blankFinalAnswer_fallsBackGracefully() = runBlocking {
+    fun run_budgetExhausted_lastCallNoticeIsAppendedBeforeFinalSynthesis() = runBlocking {
+        val plugin = defaultPlugin()
+        val adapter = oneCallPerStepAdapter()
+        val harness = AgentHarness(adapter, ToolRegistry(listOf(plugin)), maxToolCalls = 2)
+
+        harness.run(QUESTION, emptyList(), SYSTEM_PROMPT)
+
+        val finalMessages = adapter.recorded.last().messages
+        val notice = finalMessages.last() as HarnessMessage.User
+        assertEquals(AgentHarness.lastToolCallNotice(2, 2), notice.content)
+        assertTrue(notice.content.contains("(2/2)"))
+        assertTrue(notice.content.contains("Conclude now"))
+        assertTrue(notice.content.contains("what the user should ask next"))
+        // It comes right after the last tool result, after a complete assistant/tool exchange.
+        val lastTool = finalMessages[finalMessages.size - 2] as HarnessMessage.Tool
+        assertEquals("call_1", lastTool.toolCallId)
+        // No notice on the earlier tool rounds.
+        assertTrue(adapter.recorded[0].messages.none { it is HarnessMessage.User && it.content.startsWith("This was your last") })
+        assertTrue(adapter.recorded[1].messages.none { it is HarnessMessage.User && it.content.startsWith("This was your last") })
+    }
+
+    @Test
+    fun run_budgetExhausted_modelAnsweringBeforeBudget_getsNoNoticeOrExtraStep() = runBlocking {
+        val adapter = ScriptedAdapter { index, _ ->
+            if (index == 0) toolStep(call("web_search", "call_0")) else textStep("done", id = "resp-1")
+        }
+        val harness = AgentHarness(adapter, ToolRegistry(listOf(defaultPlugin())), maxToolCalls = 15)
+
+        val result = harness.run(QUESTION, emptyList(), SYSTEM_PROMPT)
+
+        assertEquals(2, adapter.recorded.size)
+        assertEquals("done", result.answerText)
+        assertEquals("resp-1", result.responseId)
+        assertTrue(adapter.recorded.all { step -> step.messages.none { it is HarnessMessage.User && it.content.startsWith("This was your last") } })
+    }
+
+    @Test
+    fun run_surplusCallsInSameStep_areDeniedWithoutExecutionAndPairingStaysValid() = runBlocking {
+        val plugin = defaultPlugin()
+        val adapter = ScriptedAdapter { index, tools ->
+            when {
+                index == 0 -> toolStep(call("web_search", "call_0"), id = "resp-0")
+                tools.isNotEmpty() -> toolStep(
+                    call("web_search", "call_1"),
+                    call("lookup", "call_2"),
+                    call("web_search", "call_3"),
+                    id = "resp-1"
+                )
+                else -> textStep("wrapped up", id = "resp-final")
+            }
+        }
+        // Budget 2: the second step requests three calls but only one is left.
+        val harness = AgentHarness(adapter, ToolRegistry(listOf(plugin)), maxToolCalls = 2)
+        val started = mutableListOf<ToolCall>()
+        val finished = mutableListOf<ToolTraceEntry>()
+
+        val result = harness.run(
+            QUESTION,
+            emptyList(),
+            SYSTEM_PROMPT,
+            onToolCallStart = { started.add(it) },
+            onToolCallFinish = { finished.add(it) }
+        )
+
+        // Only the two budgeted calls reach the plugin; the surplus ones never execute.
+        assertEquals(listOf("call_0", "call_1"), plugin.executed.map { it.id })
+        assertEquals(listOf("call_0", "call_1"), started.map { it.id })
+        assertEquals(result.toolTrace, finished)
+        assertEquals(2, result.toolTrace.size)
+
+        // The final synthesis still gets every tool_call answered: 3 requested, 3 tool messages.
+        val finalMessages = adapter.recorded.last().messages
+        val toolMessages = finalMessages.filterIsInstance<HarnessMessage.Tool>()
+        assertEquals(listOf("call_0", "call_1", "call_2", "call_3"), toolMessages.map { it.toolCallId })
+        assertEquals(listOf("web_search", "web_search", "lookup", "web_search"), toolMessages.map { it.name })
+        assertEquals("sunny, 21°C", toolMessages[1].content)
+        assertEquals(AgentHarness.budgetExhaustedResult(2, 2), toolMessages[2].content)
+        assertEquals(AgentHarness.budgetExhaustedResult(2, 2), toolMessages[3].content)
+        assertTrue(toolMessages[2].content.contains("not executed"))
+        // Tool results follow their assistant turn, then the last-call notice.
+        val assistant = finalMessages[finalMessages.indexOf(toolMessages[1]) - 1] as HarnessMessage.Assistant
+        assertEquals(listOf("call_1", "call_2", "call_3"), assistant.toolCalls.map { it.id })
+        val notice = finalMessages.last() as HarnessMessage.User
+        assertEquals(AgentHarness.lastToolCallNotice(2, 2), notice.content)
+        assertTrue(finalMessages.indexOf(notice) > finalMessages.indexOf(toolMessages[3]))
+
+        assertEquals("wrapped up", result.answerText)
+        assertEquals("resp-final", result.responseId)
+        assertEquals(3, adapter.recorded.size)
+        assertTrue(adapter.recorded[2].tools.isEmpty())
+    }
+
+    @Test
+    fun run_budgetOfOne_firstCallIsTheLastAndNoticeFollows() = runBlocking {
+        val plugin = defaultPlugin()
+        val adapter = ScriptedAdapter { index, tools ->
+            if (tools.isNotEmpty()) toolStep(call("web_search", "only"), id = "resp-0") else textStep("ok", id = "resp-final")
+        }
+        val harness = AgentHarness(adapter, ToolRegistry(listOf(plugin)), maxToolCalls = 1)
+
+        val result = harness.run(QUESTION, emptyList(), SYSTEM_PROMPT)
+
+        assertEquals(listOf("only"), plugin.executed.map { it.id })
+        assertEquals(
+            listOf(
+                HarnessMessage.System(SYSTEM_PROMPT),
+                HarnessMessage.User(QUESTION),
+                HarnessMessage.Assistant(null, listOf(call("web_search", "only"))),
+                HarnessMessage.Tool("only", "web_search", "sunny, 21°C"),
+                HarnessMessage.User(AgentHarness.lastToolCallNotice(1, 1))
+            ),
+            adapter.recorded[1].messages
+        )
+        assertEquals(1, result.toolTrace.size)
+        assertEquals("ok", result.answerText)
+    }
+
+    @Test
+    fun run_nonPositiveBudget_isTreatedAsOne() = runBlocking {
+        val plugin = defaultPlugin()
+        val adapter = oneCallPerStepAdapter()
+        val harness = AgentHarness(adapter, ToolRegistry(listOf(plugin)), maxToolCalls = 0)
+
+        harness.run(QUESTION, emptyList(), SYSTEM_PROMPT)
+
+        assertEquals(1, plugin.executed.size)
+        assertEquals(2, adapter.recorded.size)
+    }
+
+    @Test
+    fun run_budgetExhausted_blankFinalAnswer_fallsBackGracefully() = runBlocking {
         val plugin = defaultPlugin()
         val adapter = ScriptedAdapter { index, tools ->
             if (tools.isNotEmpty()) toolStep(call("web_search", "call_$index"), reasoning = "r$index")
             else textStep("   ", id = "resp-final")
         }
-        val harness = AgentHarness(adapter, ToolRegistry(listOf(plugin)), maxSteps = 2)
+        val harness = AgentHarness(adapter, ToolRegistry(listOf(plugin)), maxToolCalls = 2)
 
         val result = harness.run(QUESTION, emptyList(), SYSTEM_PROMPT)
 
         assertTrue(result.answerText.isNotBlank())
+        assertEquals(AgentHarness.STEP_LIMIT_FALLBACK, result.answerText)
         assertEquals("resp-final", result.responseId)
         assertEquals(2, result.toolTrace.size)
         assertEquals("r0\n\nr1", result.reasoningText)
     }
 
     @Test
-    fun run_maxStepsExhausted_finalStepFailure_propagates() = runBlocking {
+    fun run_budgetExhausted_finalStepFailure_propagates() = runBlocking {
         val plugin = defaultPlugin()
         val adapter = ScriptedAdapter { _, tools ->
             if (tools.isNotEmpty()) toolStep(call("web_search", "call_x"))
             else throw IllegalStateException("llm unavailable")
         }
-        val harness = AgentHarness(adapter, ToolRegistry(listOf(plugin)), maxSteps = 1)
+        val harness = AgentHarness(adapter, ToolRegistry(listOf(plugin)), maxToolCalls = 1)
 
         try {
             harness.run(QUESTION, emptyList(), SYSTEM_PROMPT)
