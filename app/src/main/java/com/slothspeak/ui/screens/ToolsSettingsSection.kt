@@ -282,8 +282,9 @@ fun ToolsSettingsSection(
                 style = MaterialTheme.typography.titleSmall
             )
             Text(
-                text = "Appended to the system prompt whenever a tool plugin is active, so the " +
-                    "model treats everything a tool returns as untrusted data and never as instructions.",
+                text = "Appended to the system prompt whenever a tool plugin is active or earlier " +
+                    "tool results are replayed from the conversation history, so the model treats " +
+                    "everything a tool returns as untrusted data and never as instructions.",
                 style = MaterialTheme.typography.bodySmall,
                 color = TextSecondary,
                 modifier = Modifier.padding(top = 2.dp, bottom = 8.dp)

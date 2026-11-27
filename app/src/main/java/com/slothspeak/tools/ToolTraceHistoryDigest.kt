@@ -22,6 +22,8 @@ import com.slothspeak.data.db.entities.QAPair
 internal const val DIGEST_PREVIEW_CHARS = 400
 /** Chars kept for a call's arguments. */
 internal const val DIGEST_ARGUMENT_CHARS = 200
+/** Chars kept for a tool name; names are short identifiers, but a hallucinated one need not be. */
+internal const val DIGEST_NAME_CHARS = 100
 
 /** Opens every digest block; also what [containsToolTraceDigest] looks for. */
 internal const val UNTRUSTED_HISTORY_MARKER =
@@ -45,10 +47,13 @@ internal const val DIGEST_FOOTNOTE =
 internal fun formatToolTraceDigest(entries: List<ToolTraceEntry>): String? {
     if (entries.isEmpty()) return null
     val calls = entries.joinToString("; ") { entry ->
+        // The name gets the same hygiene as the other fields: a model-invented tool name can
+        // carry newlines or a forged end marker just like a result can.
+        val name = digestText(entry.name, DIGEST_NAME_CHARS)
         val args = digestText(formatToolArguments(entry.name, entry.argumentsJson), DIGEST_ARGUMENT_CHARS)
         val preview = digestText(entry.resultPreview, DIGEST_PREVIEW_CHARS)
         val outcome = if (entry.isError) "ERROR: $preview" else preview.ifBlank { "(no output)" }
-        "${entry.name}($args) -> $outcome"
+        "$name($args) -> $outcome"
     }
     return "$UNTRUSTED_HISTORY_MARKER\n" +
         "Previous tool calls for this answer: $calls\n" +
@@ -118,8 +123,8 @@ private val BEARER_TOKEN = Regex("""\b(Bearer)\s+[^\s"',;]+""")
 /** OpenAI/Anthropic-style secret keys (`sk-…`). */
 private val SK_STYLE_KEY = Regex("""\bsk-[A-Za-z0-9_-]{8,}""")
 
-/** URL userinfo (`https://user:pass@host`): the `user:pass` part becomes `***` (any scheme, with or without a password). */
-private val URL_USERINFO = Regex("""(?i)\b([a-z][a-z0-9+.-]*://)[^/\s@]+@""")
+/** URL userinfo (`https://user:pass@host`): the `user:pass` part becomes `***`. `?`/`#` end the authority, so an `@` inside a query or fragment is not userinfo. */
+private val URL_USERINFO = Regex("""(?i)\b([a-z][a-z0-9+.-]*://)[^/\s@?#]+@""")
 
 /** `?api_key=…&sig=…` → `?api_key=***&sig=***`. */
 private val SENSITIVE_QUERY_PARAM =
@@ -127,13 +132,14 @@ private val SENSITIVE_QUERY_PARAM =
 
 /**
  * `name=value`, `name: value` and JSON-style `"name": "value"` pairs. Only pairs whose name
- * is sensitive ([isSensitiveName]) are rewritten. The value runs to the next separator, the
- * next `name=`/`name:` token, or a `#`/`?`/`&`-introduced one (`x=1#token=…`), so one pair
- * never swallows a later one; `://` is never a separator (`https://host/a?token=x` stays
- * one token for the query pass to redact).
+ * is sensitive ([isSensitiveName]) are rewritten. A quoted value is consumed whole, up to its
+ * closing quote, so `,`/`;`/`&` inside it cannot cut the redaction short; an unquoted value
+ * runs to the next delimiter, the next `name=`/`name:` token, or a `#`/`?`/`&`-introduced
+ * one (`x=1#token=…`), so one pair never swallows a later one. `://` is never a separator
+ * (`https://host/a?token=x` stays one token for the query pass to redact).
  */
 private val KEY_VALUE = Regex(
-    """([A-Za-z0-9_.-]+)("\s*[=:]\s*"?|\s*=\s*|\s*:(?!//)\s*)("[^"]*"|'[^']*'|.+?)(?=\s*[·,;&}\]"]|\s*$|\s+[A-Za-z0-9_.-]+\s*[=:]|[#?&][A-Za-z0-9_.-]+\s*[=:])"""
+    """([A-Za-z0-9_.-]+)(["']\s*[=:]\s*|\s*=\s*|\s*:(?!//)\s*)("[^"]*"|'[^']*'|.+?)(?=\s*[·,;&}\]"]|\s*$|\s+[A-Za-z0-9_.-]+\s*[=:]|[#?&][A-Za-z0-9_.-]+\s*[=:])"""
 )
 
 /**
@@ -150,9 +156,16 @@ internal fun redactSecrets(text: String): String {
     out = out.replace(SENSITIVE_QUERY_PARAM) { "${it.groupValues[1]}${it.groupValues[2]}=$REDACTED" }
     out = out.replace(KEY_VALUE) { match ->
         val name = match.groupValues[1]
-        if (isSensitiveName(name)) "$name${match.groupValues[2]}$REDACTED" else match.value
+        if (isSensitiveName(name)) "$name${match.groupValues[2]}${redactedValue(match.groupValues[3])}" else match.value
     }
     return out
+}
+
+/** Quoted values keep their quotes so the surrounding JSON/structured text stays well-formed. */
+private fun redactedValue(value: String): String = when {
+    value.length >= 2 && value.startsWith("\"") && value.endsWith("\"") -> "\"$REDACTED\""
+    value.length >= 2 && value.startsWith("'") && value.endsWith("'") -> "'$REDACTED'"
+    else -> REDACTED
 }
 
 private fun isSensitiveName(name: String): Boolean {
