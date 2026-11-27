@@ -51,6 +51,9 @@ import com.slothspeak.tools.ToolConfirmationHandler
 import com.slothspeak.tools.ToolConfirmationRequest
 import com.slothspeak.tools.ToolRegistry
 import com.slothspeak.tools.ToolTraceEntry
+import com.slothspeak.tools.compatHistoryFrom
+import com.slothspeak.tools.composeToolSystemPrompt
+import com.slothspeak.tools.containsToolTraceDigest
 import com.slothspeak.tools.formatToolSummary
 import com.slothspeak.tools.plugins.BraveSearchPlugin
 import com.slothspeak.tools.plugins.HttpRequestPlugin
@@ -426,12 +429,26 @@ class SlothSpeakService : Service() {
     )
 
     /**
+     * Conversation history for the compat LLM step, oldest first. Each previous answer that
+     * used tools carries a digest of those calls (issue #14) so the model does not relaunch
+     * identical calls in a follow-up. The placeholder row of the question currently being
+     * answered has no answer yet and is skipped. Empty when the conversation is new.
+     */
+    private suspend fun loadCompatHistory(conversationId: Long?): List<Pair<String, String>> {
+        if (conversationId == null) return emptyList()
+        return withContext(Dispatchers.IO) {
+            compatHistoryFrom(database.conversationDao().getQAPairsForConversationOnce(conversationId))
+        }
+    }
+
+    /**
      * Runs the LLM step for an OpenAI-compatible provider — shared by the voice, text and
      * retry pipelines so all three take the same path through the tool harness.
      *
      * With at least one enabled *and* configured tool plugin the request goes through
-     * [AgentHarness]: tool calls are executed and fed back until the model answers in text.
-     * Without tools it is a single plain chat completion, exactly as before tools existed.
+     * [AgentHarness]: tool calls are executed and fed back until the model answers in text,
+     * and the configured tool-safety preamble is appended to the system prompt. Without tools
+     * it is a single plain chat completion with the user's prompt as-is.
      * Transport/API errors propagate to the caller.
      *
      * @param elapsedSecondsProvider elapsed time of the LLM step so far; forwarded to
@@ -444,8 +461,16 @@ class SlothSpeakService : Service() {
         elapsedSecondsProvider: () -> Int
     ): CompatLlmOutcome {
         lastToolCallsJson = null
-        val systemPrompt = apiKeyManager.getSystemPrompt()
-        if (toolRegistry.activeTools().isEmpty()) {
+        val activeTools = toolRegistry.activeTools()
+        // The safety preamble joins the prompt whenever tool data is or may be in play:
+        // tools offered now, or untrusted tool results replayed from the history (issue #15).
+        val systemPrompt = composeToolSystemPrompt(
+            basePrompt = apiKeyManager.getSystemPrompt(),
+            toolSafetyPrompt = toolConfigManager.getToolSafetyPrompt(),
+            toolsActive = activeTools.isNotEmpty(),
+            historyHasToolData = history.containsToolTraceDigest()
+        )
+        if (activeTools.isEmpty()) {
             val result = openAiCompatibleClient.createResponse(
                 question = questionText,
                 history = history,
@@ -469,10 +494,11 @@ class SlothSpeakService : Service() {
             )
         }
 
-        Log.d(TAG, "Running agent harness with tools: ${toolRegistry.activeTools().joinToString { it.name }}")
+        Log.d(TAG, "Running agent harness with tools: ${activeTools.joinToString { it.name }} (max ${toolConfigManager.getMaxToolCalls()} calls)")
         val result = AgentHarness(
             OpenAiCompatibleChatAdapter(openAiCompatibleClient, compatProvider),
-            toolRegistry
+            toolRegistry,
+            maxToolCalls = toolConfigManager.getMaxToolCalls()
         ).run(
             question = questionText,
             history = history,
@@ -969,16 +995,8 @@ class SlothSpeakService : Service() {
                 lastAnswerTextRich = result.answerTextRich
                 responseId = result.responseId
             } else if (isCompat && compatProvider != null) {
-                // Load conversation history for compat provider
-                val history = if (existingConversationId != null) {
-                    withContext(Dispatchers.IO) {
-                        database.conversationDao()
-                            .getQAPairsForConversationOnce(existingConversationId)
-                            .map { it.questionText to it.answerText }
-                    }
-                } else {
-                    emptyList()
-                }
+                // Load conversation history for compat provider (with tool-call digests)
+                val history = loadCompatHistory(existingConversationId)
                 val result = runCompatLlm(questionText, history, compatProvider) { currentElapsedSeconds() }
                 timerJob.cancel()
                 lastLlmResponseSeconds = ((System.currentTimeMillis() - llmStartTime) / 1000).toInt()
@@ -2082,15 +2100,7 @@ class SlothSpeakService : Service() {
                 lastAnswerTextRich = result.answerTextRich
                 responseId = result.responseId
             } else if (isCompat && compatProvider != null) {
-                val history = if (existingConversationId != null) {
-                    withContext(Dispatchers.IO) {
-                        database.conversationDao()
-                            .getQAPairsForConversationOnce(existingConversationId)
-                            .map { it.questionText to it.answerText }
-                    }
-                } else {
-                    emptyList()
-                }
+                val history = loadCompatHistory(existingConversationId)
                 val result = runCompatLlm(questionText, history, compatProvider) { currentElapsedSeconds() }
                 timerJob.cancel()
                 lastLlmResponseSeconds = ((System.currentTimeMillis() - llmStartTime) / 1000).toInt()

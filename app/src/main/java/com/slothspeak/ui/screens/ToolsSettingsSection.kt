@@ -72,7 +72,10 @@ fun ToolsSettingsSection(
     onRemoveAllowedWriteHost: (String) -> Unit,
     onResetAllowedWriteHosts: () -> Unit,
     onSaveHostAuthProfile: (host: String, headerName: String, headerValue: String) -> Unit,
-    onDeleteHostAuthProfile: (String) -> Unit
+    onDeleteHostAuthProfile: (String) -> Unit,
+    onSetMaxToolCalls: (Int) -> Unit,
+    onSetToolSafetyPrompt: (String) -> Unit,
+    onResetToolSafetyPrompt: () -> Unit
 ) {
     var showBraveKeyDialog by remember { mutableStateOf(false) }
     var showAuthProfileDialog by remember { mutableStateOf(false) }
@@ -237,6 +240,77 @@ fun ToolsSettingsSection(
         }
     }
 
+    Spacer(modifier = Modifier.height(8.dp))
+
+    // ---- Tool usage (agent harness budget) ----
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = "Tool usage",
+                style = MaterialTheme.typography.titleSmall
+            )
+            Text(
+                text = "How many tool calls the model may run to answer one prompt. " +
+                    "When the last call is used the model concludes with what it has; " +
+                    "send another prompt to continue.",
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary,
+                modifier = Modifier.padding(top = 2.dp, bottom = 8.dp)
+            )
+            MaxToolCallsField(
+                value = state.maxToolCalls,
+                onCommit = onSetMaxToolCalls
+            )
+        }
+    }
+
+    Spacer(modifier = Modifier.height(8.dp))
+
+    // ---- Tool safety prompt (prompt-injection guard) ----
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = "Tool safety",
+                style = MaterialTheme.typography.titleSmall
+            )
+            Text(
+                text = "Appended to the system prompt whenever a tool plugin is active or earlier " +
+                    "tool results are replayed from the conversation history, so the model treats " +
+                    "everything a tool returns as untrusted data and never as instructions.",
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary,
+                modifier = Modifier.padding(top = 2.dp, bottom = 8.dp)
+            )
+            OutlinedTextField(
+                value = state.toolSafetyPrompt,
+                onValueChange = onSetToolSafetyPrompt,
+                label = { Text("Tool safety prompt") },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(160.dp),
+                maxLines = 8,
+                colors = toolsFieldColors()
+            )
+            if (state.toolSafetyPrompt != ToolConfigManager.DEFAULT_TOOL_SAFETY_PROMPT) {
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = onResetToolSafetyPrompt,
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = AccentGreen)
+                ) {
+                    Text("Reset to default")
+                }
+            }
+        }
+    }
+
     if (showBraveKeyDialog) {
         BraveApiKeyDialog(
             hasKey = state.braveApiKeyConfigured,
@@ -257,6 +331,44 @@ fun ToolsSettingsSection(
             }
         )
     }
+}
+
+/**
+ * Digits-only field for the per-prompt tool-call budget. Only values inside
+ * [ToolConfigManager.MIN_TOOL_CALLS]..[ToolConfigManager.MAX_TOOL_CALLS_LIMIT] are committed;
+ * anything else (empty, 0, 999) stays local and is flagged until corrected.
+ */
+@Composable
+private fun MaxToolCallsField(value: Int, onCommit: (Int) -> Unit) {
+    // Re-seed the text whenever the committed value changes (typed, clamped or reset elsewhere).
+    var text by remember(value) { mutableStateOf(value.toString()) }
+    val parsed = text.toIntOrNull()
+    val inRange = parsed != null && parsed in ToolConfigManager.MIN_TOOL_CALLS..ToolConfigManager.MAX_TOOL_CALLS_LIMIT
+
+    OutlinedTextField(
+        value = text,
+        onValueChange = { input ->
+            val digits = input.filter { it.isDigit() }
+            text = digits
+            digits.toIntOrNull()?.takeIf { it in ToolConfigManager.MIN_TOOL_CALLS..ToolConfigManager.MAX_TOOL_CALLS_LIMIT }
+                ?.let(onCommit)
+        },
+        label = { Text("Max tool calls per prompt") },
+        supportingText = {
+            Text(
+                if (inRange || text.isEmpty()) {
+                    "Default ${ToolConfigManager.DEFAULT_MAX_TOOL_CALLS} · ${ToolConfigManager.MIN_TOOL_CALLS}–${ToolConfigManager.MAX_TOOL_CALLS_LIMIT}"
+                } else {
+                    "Enter a number between ${ToolConfigManager.MIN_TOOL_CALLS} and ${ToolConfigManager.MAX_TOOL_CALLS_LIMIT}"
+                }
+            )
+        },
+        isError = !inRange && text.isNotEmpty(),
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        modifier = Modifier.fillMaxWidth(),
+        colors = toolsFieldColors()
+    )
 }
 
 @Composable

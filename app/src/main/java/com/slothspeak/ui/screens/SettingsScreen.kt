@@ -154,7 +154,10 @@ fun SettingsScreen(
                 onSaveHostAuthProfile = { host, headerName, headerValue ->
                     viewModel.saveHostAuthProfile(host, headerName, headerValue)
                 },
-                onDeleteHostAuthProfile = { viewModel.deleteHostAuthProfile(it) }
+                onDeleteHostAuthProfile = { viewModel.deleteHostAuthProfile(it) },
+                onSetMaxToolCalls = { viewModel.setMaxToolCalls(it) },
+                onSetToolSafetyPrompt = { viewModel.setToolSafetyPrompt(it) },
+                onResetToolSafetyPrompt = { viewModel.resetToolSafetyPrompt() }
             )
 
             Spacer(modifier = Modifier.height(24.dp))
