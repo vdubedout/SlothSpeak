@@ -16,16 +16,23 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -61,7 +68,10 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -69,6 +79,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
@@ -225,6 +236,12 @@ fun MainScreen(
         }
     }
 
+    // Keep the latest message visible when the soft keyboard opens and shrinks the list
+    KeepLatestVisibleOnImeOpen(
+        listState = listState,
+        itemCount = sessionItems.size
+    )
+
     // Cancel confirmation dialog
     if (showCancelConfirmation) {
         AlertDialog(
@@ -253,9 +270,8 @@ fun MainScreen(
         )
     }
 
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
-        snackbarHost = { SnackbarHost(snackbarHostState) },
+    MainScaffold(
+        snackbarHostState = snackbarHostState,
         topBar = {
             TopAppBar(
                 title = {
@@ -311,12 +327,7 @@ fun MainScreen(
                 )
             )
         }
-    ) { padding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-        ) {
+    ) {
             if (!uiState.canConverse) {
                 // No usable API key - prompt to set one
                 Column(
@@ -508,7 +519,6 @@ fun MainScreen(
                     onCancelTranscript = { viewModel.cancelStreamingTranscript() }
                 )
             }
-        }
     }
 
     // Model switcher popup (opened from the pill below the composer)
@@ -521,6 +531,77 @@ fun MainScreen(
                 onNavigateToSettings()
             },
             onDismiss = { showModelSwitcher = false }
+        )
+    }
+}
+
+/**
+ * Scrolls the conversation list to the bottom spacer whenever the IME opens or
+ * shrinks the list viewport so the latest Q&A card stays visible above the composer.
+ */
+@Composable
+internal fun KeepLatestVisibleOnImeOpen(
+    listState: LazyListState,
+    itemCount: Int
+) {
+    val density = LocalDensity.current
+    val imeInsets = WindowInsets.ime
+    val currentItemCount by rememberUpdatedState(itemCount)
+    LaunchedEffect(imeInsets, density, listState) {
+        var previousImeBottomPx = 0
+        var previousViewportHeight = 0
+        snapshotFlow {
+            imeInsets.getBottom(density) to listState.layoutInfo.viewportSize.height
+        }.collect { (imeBottomPx, viewportHeight) ->
+            val imeGrew = imeBottomPx > previousImeBottomPx
+            val viewportShrankWithImeOpen =
+                imeBottomPx > 0 && previousViewportHeight > 0 && viewportHeight < previousViewportHeight
+            previousImeBottomPx = imeBottomPx
+            previousViewportHeight = viewportHeight
+            if ((imeGrew || viewportShrankWithImeOpen) && currentItemCount > 0) {
+                // Wait for the current layout/deactivation pass to settle before scrolling.
+                withFrameNanos { }
+                val totalItems = listState.layoutInfo.totalItemsCount
+                if (totalItems > 0) {
+                    listState.scrollToItem(currentItemCount.coerceAtMost(totalItems - 1))
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Home screen [Scaffold] shell that applies system-bar and IME insets to both
+ * the content area and snackbar host while consuming Scaffold's padding first
+ * so the navigation bar is never double-padded when the soft keyboard opens.
+ */
+@Composable
+internal fun MainScaffold(
+    snackbarHostState: SnackbarHostState,
+    topBar: @Composable () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable BoxScope.() -> Unit
+) {
+    Scaffold(
+        modifier = modifier,
+        containerColor = MaterialTheme.colorScheme.background,
+        snackbarHost = {
+            SnackbarHost(
+                hostState = snackbarHostState,
+                modifier = Modifier
+                    .consumeWindowInsets(WindowInsets.navigationBars)
+                    .imePadding()
+            )
+        },
+        topBar = topBar
+    ) { padding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .consumeWindowInsets(padding)
+                .imePadding(),
+            content = content
         )
     }
 }
